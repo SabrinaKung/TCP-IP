@@ -110,15 +110,11 @@ func forwardPacket(packet *IPPacket) {
 
 ## APIs for Lower Layers (Link Layer)
 
-### `func ReceiveFromLinkLayer(data []byte)`
+### `func ReceivePacket(packet *IPPacket, recvAddr string)`
 - **Purpose**: Allows the Link Layer to pass received data to the Network Layer for processing.
 - **Code Example**:
     ```go
-    func (n *NetworkLayer) ReceiveFromLinkLayer(data []byte) error {
-        packet, err := parseIPPacket(data)
-        if err != nil {
-            return err
-        }
+    func ReceivePacket(packet *IPPacket, recvAddr string)error {
         go n.HandlePacket(packet)
         return nil
     }
