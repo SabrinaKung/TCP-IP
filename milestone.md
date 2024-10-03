@@ -102,6 +102,7 @@ func findNextHop(dst net.IP) string {
 }
 
 func forwardPacket(packet *IPPacket) {
+// checksum
    packet.UpdateTTL()
    nextHop := findNextHop(packet.DstIP)
    // ... send to Link Layer
