@@ -40,6 +40,7 @@ func (l *LinkLayer) Initialize (configFile string) error{
 	l.LinklayerConfig.RoutingMode = temp.RoutingMode
 
 	l.connMap = make(map[string]*net.UDPConn)
+	l.IfaceStatus = make(map[string]string)
 	// Initialize interface 
 	for _, i := range l.LinklayerConfig.Interfaces{
 		udpAddr := &net.UDPAddr{
