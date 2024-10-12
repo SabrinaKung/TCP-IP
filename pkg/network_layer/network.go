@@ -1,10 +1,12 @@
 package network_layer
 
 import (
+	"fmt"
 	"net/netip"
 	"sort"
 	"team21/ip/pkg/common"
 	"team21/ip/pkg/lnxconfig"
+
 	ipv4header "github.com/brown-csci1680/iptcp-headers"
 )
 
@@ -59,12 +61,15 @@ const (
 
 type NetworkLayer struct {
     linkLayer 			common.LinkLayerAPI
-	RipNeighbors 		[]netip.Addr
+	ripNeighbors 		[]netip.Addr
 	forwardingTable 	[] fwdTableEntry
+	handlerMap          map[uint8]common.HandlerFunc
+	isRouter            bool
 }
 
-func NewNetworkLayer(linkLayer common.LinkLayerAPI) *NetworkLayer {
-    return &NetworkLayer{linkLayer: linkLayer}
+
+func (n *NetworkLayer) SetLinkLayerApi(linkLayer common.LinkLayerAPI) {
+	n.linkLayer = linkLayer
 }
 
 func (n *NetworkLayer) Initialize (configFile string, isRouter bool) error{
@@ -72,6 +77,8 @@ func (n *NetworkLayer) Initialize (configFile string, isRouter bool) error{
 	if err != nil{
 		return err
 	}
+	n.handlerMap = make(map[uint8]func(*common.IpPacket) error)
+
 	// Initialize static route 
 	for prefix, addr := range(temp.StaticRoutes){
 		entry := fwdTableEntry{
@@ -92,15 +99,16 @@ func (n *NetworkLayer) Initialize (configFile string, isRouter bool) error{
 		for _, iFace := range(temp.Interfaces){
 			if iFace.Name == neighbor.InterfaceName{
 				entry.prefix = iFace.AssignedPrefix
+				break
 			}
-			break
 		}
 		n.insertEntry(entry)
 	}
 
 	// Initialize RipNeighbors
 	if isRouter{
-		n.RipNeighbors = temp.RipNeighbors
+		n.isRouter = true
+		n.ripNeighbors = temp.RipNeighbors
 	}
 	return nil 
 }
@@ -134,6 +142,37 @@ func (n *NetworkLayer) SendIP(dst netip.Addr, protocolNum uint8, data []byte) er
 	return nil 
 }
 
-func (n *NetworkLayer) ReceiveIpPacket(packet common.IpPacket, thisHopIp netip.Addr) error{
-	return nil 
+func (n *NetworkLayer) ReceiveIpPacket(packet *common.IpPacket, thisHopIp netip.Addr) error{
+	if packet.Header.TTL == 0 {
+		return nil// Drop packet with expired TTL
+	}
+	if n.isRouter{
+		if packet.Header.Dst == thisHopIp{ // package sent to router, usually is RIP package 
+			if handler, exists := n.handlerMap[uint8(packet.Header.Protocol)]; exists {
+                handler(packet)
+            }
+		}else{ // not my package, need to forward
+			dst := packet.Header.Dst
+			protocolNum := packet.Header.Protocol
+			err := n.SendIP(dst, uint8(protocolNum), packet.Message)
+			if err != nil{
+				return err 
+			}
+		}
+		
+	}else{ //host does not need to forward package
+		if packet.Header.Dst == thisHopIp{
+			if handler, exists := n.handlerMap[uint8(packet.Header.Protocol)]; exists {
+                handler(packet)
+            }
+		}
+	}
+	return nil
+}
+func (n *NetworkLayer) RegisterRecvHandler(protocolNum uint8, callbackFunc common.HandlerFunc) error{
+	if _, exists := n.handlerMap[protocolNum]; exists {
+		return fmt.Errorf("handler for protocol %d already exists", protocolNum)
+	}
+	n.handlerMap[protocolNum] = callbackFunc
+	return nil
 }

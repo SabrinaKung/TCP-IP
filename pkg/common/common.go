@@ -16,10 +16,13 @@ type IpPacket struct{
 }
 
 type NetworkLayerAPI interface {
-    ReceiveIpPacket(packet IpPacket, thisHopIp netip.Addr) error
+    ReceiveIpPacket(packet *IpPacket, thisHopIp netip.Addr) error
 }
 
 
 type LinkLayerAPI interface {
     SendIpPacket(ifName string, nextHopIp netip.Addr, packet IpPacket) error
+	Initialize (configFile string) error
 }
+
+type HandlerFunc = func(*IpPacket) error

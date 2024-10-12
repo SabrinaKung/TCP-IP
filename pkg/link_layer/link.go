@@ -1,13 +1,15 @@
 package link_layer
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"net/netip"
 	"team21/ip/pkg/common"
 	"team21/ip/pkg/lnxconfig"
-	"github.com/google/netstack/tcpip/header"
+
 	ipv4header "github.com/brown-csci1680/iptcp-headers"
+	"github.com/google/netstack/tcpip/header"
 )
 
 type LinklayerConfig struct{
@@ -23,8 +25,8 @@ type LinkLayer struct {
 	connMap 			map[string]*net.UDPConn
 }
 
-func NewLinkLayer(networkLayer common.NetworkLayerAPI) *LinkLayer {
-    return &LinkLayer{networkLayer: networkLayer}
+func (l *LinkLayer) SetNetworkLayerApi(networkLayer common.NetworkLayerAPI){
+	l.networkLayer = networkLayer
 }
 
 func (l *LinkLayer) Initialize (configFile string) error{
@@ -80,12 +82,18 @@ func (l *LinkLayer) SendIpPacket(ifName string, nextHopIp netip.Addr, packet com
 		return err
 	}
 	packet.Header.Checksum = int(computeChecksum(headerBytes)) + 1
+	// assing src for ip header 
+	for _, i := range(l.linklayerConfig.Interfaces){
+		if i.Name == ifName{
+			packet.Header.Src = i.AssignedIP
+		}
+	}
 
 	headerBytes, err = packet.Header.Marshal()
 	if err != nil {
 		log.Fatalln("Error marshalling header:  ", err)
 	}
-
+	
 	// Append header + message into one byte array
 	bytesToSend := make([]byte, 0, len(headerBytes) + len(packet.Message))
 	bytesToSend = append(bytesToSend, headerBytes...)
@@ -102,8 +110,13 @@ func (l *LinkLayer) SendIpPacket(ifName string, nextHopIp netip.Addr, packet com
 			break
 		}
 	}
-
-	conn := l.connMap[ifName]
+	if udpAddr == nil{
+		return fmt.Errorf("sending addr does not exist in this subnet")
+	}
+	conn, ok := l.connMap[ifName]
+	if !ok {
+		return fmt.Errorf("interface does not exist")
+	} 
 	bytesWritten, err := conn.WriteToUDP(bytesToSend, udpAddr)
 	if err != nil {
 		return err 
@@ -126,9 +139,7 @@ func (l *LinkLayer) handleUdpPacket(buffer []byte, conn *net.UDPConn) error{
 	// Validate the checksum
 	headerBytes := buffer[:headerSize]
 	checksumFromHeader := uint16(hdr.Checksum)
-	computedChecksum := ValidateChecksum(headerBytes, checksumFromHeader)
-
-	if computedChecksum != checksumFromHeader {
+	if ValidateChecksum(headerBytes, checksumFromHeader) == 0 {
 		log.Println("invalid checksum")
 		return nil
 	} 
@@ -142,7 +153,7 @@ func (l *LinkLayer) handleUdpPacket(buffer []byte, conn *net.UDPConn) error{
 	localAddr, _ := netip.ParseAddrPort(conn.LocalAddr().String())
 	for _, i := range l.linklayerConfig.Interfaces{
 		if i.UDPAddr == localAddr{
-			err := l.networkLayer.ReceiveIpPacket(*ipPacket, i.AssignedIP)
+			err := l.networkLayer.ReceiveIpPacket(ipPacket, i.AssignedIP)
 			_ = err 
 			break
 		}
