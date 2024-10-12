@@ -19,15 +19,15 @@ type fwdTableEntry struct{
 }
 
 func (n *NetworkLayer) insertEntry(entry fwdTableEntry) {
-	n.forwardingTable = append(n.forwardingTable, entry)
+	n.ForwardingTable = append(n.ForwardingTable, entry)
 	// Sort by prefix length in descending order
-	sort.Slice(n.forwardingTable, func(i, j int) bool {
-		return n.forwardingTable[i].prefix.Bits() > n.forwardingTable[j].prefix.Bits()
+	sort.Slice(n.ForwardingTable, func(i, j int) bool {
+		return n.ForwardingTable[i].prefix.Bits() > n.ForwardingTable[j].prefix.Bits()
 	})
 }
 
 func (n *NetworkLayer) lookup(ip netip.Addr) *fwdTableEntry {
-	for _, entry := range n.forwardingTable {
+	for _, entry := range n.ForwardingTable {
 		if entry.prefix.Contains(ip) {
 			if entry.routingType != routingTypeLocal{
 				return n.lookup(entry.nextHopIP)
@@ -39,7 +39,7 @@ func (n *NetworkLayer) lookup(ip netip.Addr) *fwdTableEntry {
 	return nil 
 }
 func (n *NetworkLayer) lookupNextIp(ip netip.Addr) netip.Addr{
-	for _, entry := range n.forwardingTable {
+	for _, entry := range n.ForwardingTable {
 		if entry.prefix.Contains(ip) {
 			if entry.routingType != routingTypeLocal{
 				return entry.nextHopIP
@@ -62,7 +62,7 @@ const (
 type NetworkLayer struct {
     linkLayer 			common.LinkLayerAPI
 	ripNeighbors 		[]netip.Addr
-	forwardingTable 	[] fwdTableEntry
+	ForwardingTable 	[] fwdTableEntry
 	handlerMap          map[uint8]common.HandlerFunc
 	isRouter            bool
 }

@@ -21,7 +21,8 @@ type LinklayerConfig struct{
 
 type LinkLayer struct {
     networkLayer 		common.NetworkLayerAPI
-	linklayerConfig 	LinklayerConfig
+	LinklayerConfig 	LinklayerConfig
+	IfaceStatus         map[string]string
 	connMap 			map[string]*net.UDPConn
 }
 
@@ -34,13 +35,13 @@ func (l *LinkLayer) Initialize (configFile string) error{
 	if err != nil{
 		return err
 	}
-	l.linklayerConfig.Interfaces = temp.Interfaces
-	l.linklayerConfig.Neighbors = temp.Neighbors
-	l.linklayerConfig.RoutingMode = temp.RoutingMode
+	l.LinklayerConfig.Interfaces = temp.Interfaces
+	l.LinklayerConfig.Neighbors = temp.Neighbors
+	l.LinklayerConfig.RoutingMode = temp.RoutingMode
 
 	l.connMap = make(map[string]*net.UDPConn)
 	// Initialize interface 
-	for _, i := range l.linklayerConfig.Interfaces{
+	for _, i := range l.LinklayerConfig.Interfaces{
 		udpAddr := &net.UDPAddr{
 			IP:   i.UDPAddr.Addr().AsSlice(),
 			Port: int(i.UDPAddr.Port()),
@@ -52,6 +53,7 @@ func (l *LinkLayer) Initialize (configFile string) error{
 			return err
 		}
 		l.connMap[i.Name] = conn
+		l.IfaceStatus[i.Name] = "up"
 	}
 
 	// start goroutine to listen on udp port
@@ -83,7 +85,7 @@ func (l *LinkLayer) SendIpPacket(ifName string, nextHopIp netip.Addr, packet com
 	}
 	packet.Header.Checksum = int(computeChecksum(headerBytes)) + 1
 	// assing src for ip header 
-	for _, i := range(l.linklayerConfig.Interfaces){
+	for _, i := range(l.LinklayerConfig.Interfaces){
 		if i.Name == ifName{
 			packet.Header.Src = i.AssignedIP
 		}
@@ -101,7 +103,7 @@ func (l *LinkLayer) SendIpPacket(ifName string, nextHopIp netip.Addr, packet com
 
 	// now the data to be send is ready, next is to deal with conn and addr
 	var udpAddr *net.UDPAddr
-	for _, neighbor := range l.linklayerConfig.Neighbors{
+	for _, neighbor := range l.LinklayerConfig.Neighbors{
 		if neighbor.DestAddr == nextHopIp{
 			udpAddr = &net.UDPAddr{
 				IP:   neighbor.UDPAddr.Addr().AsSlice(),
@@ -151,8 +153,11 @@ func (l *LinkLayer) handleUdpPacket(buffer []byte, conn *net.UDPConn) error{
 	}
 
 	localAddr, _ := netip.ParseAddrPort(conn.LocalAddr().String())
-	for _, i := range l.linklayerConfig.Interfaces{
+	for _, i := range l.LinklayerConfig.Interfaces{
 		if i.UDPAddr == localAddr{
+			if(l.IfaceStatus[i.Name] == "down") {
+				return nil
+			}
 			err := l.networkLayer.ReceiveIpPacket(ipPacket, i.AssignedIP)
 			_ = err 
 			break
