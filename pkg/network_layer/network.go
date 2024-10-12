@@ -153,11 +153,14 @@ func (n *NetworkLayer) ReceiveIpPacket(packet *common.IpPacket, thisHopIp netip.
             }
 		}else{ // not my package, need to forward
 			dst := packet.Header.Dst
-			protocolNum := packet.Header.Protocol
-			err := n.SendIP(dst, uint8(protocolNum), packet.Message)
+			packet.Header.TTL -= 1
+			fwdEntry := n.lookup(dst)
+			nextIp   := n.lookupNextIp(dst)
+			err := n.linkLayer.SendIpPacket(fwdEntry.nextHopIface, nextIp, *packet)
 			if err != nil{
-				return err 
+				return err
 			}
+			return nil 
 		}
 		
 	}else{ //host does not need to forward package
