@@ -12,7 +12,7 @@ import (
 	"github.com/google/netstack/tcpip/header"
 )
 
-type LinklayerConfig struct{
+type LinklayerConfig struct {
 	Interfaces []lnxconfig.InterfaceConfig
 	Neighbors  []lnxconfig.NeighborConfig
 
@@ -20,19 +20,19 @@ type LinklayerConfig struct{
 }
 
 type LinkLayer struct {
-    networkLayer 		common.NetworkLayerAPI
-	LinklayerConfig 	LinklayerConfig
-	IfaceStatus         map[string]string
-	connMap 			map[string]*net.UDPConn
+	networkLayer    common.NetworkLayerAPI
+	LinklayerConfig LinklayerConfig
+	IfaceStatus     map[string]string
+	connMap         map[string]*net.UDPConn
 }
 
-func (l *LinkLayer) SetNetworkLayerApi(networkLayer common.NetworkLayerAPI){
+func (l *LinkLayer) SetNetworkLayerApi(networkLayer common.NetworkLayerAPI) {
 	l.networkLayer = networkLayer
 }
 
-func (l *LinkLayer) Initialize (configFile string) error{
+func (l *LinkLayer) Initialize(configFile string) error {
 	temp, err := lnxconfig.ParseConfig(configFile)
-	if err != nil{
+	if err != nil {
 		return err
 	}
 	l.LinklayerConfig.Interfaces = temp.Interfaces
@@ -41,8 +41,8 @@ func (l *LinkLayer) Initialize (configFile string) error{
 
 	l.connMap = make(map[string]*net.UDPConn)
 	l.IfaceStatus = make(map[string]string)
-	// Initialize interface 
-	for _, i := range l.LinklayerConfig.Interfaces{
+	// Initialize interface
+	for _, i := range l.LinklayerConfig.Interfaces {
 		udpAddr := &net.UDPAddr{
 			IP:   i.UDPAddr.Addr().AsSlice(),
 			Port: int(i.UDPAddr.Port()),
@@ -58,17 +58,17 @@ func (l *LinkLayer) Initialize (configFile string) error{
 	}
 
 	// start goroutine to listen on udp port
-	for _, conn := range l.connMap{
-		go func(){
-			for{
+	for _, conn := range l.connMap {
+		go func() {
+			for {
 				buffer := make([]byte, common.MessageSize)
 				bytesRead, sourceAddr, err := conn.ReadFromUDP(buffer)
-				if err != nil{
+				if err != nil {
 					log.Println(err)
 				}
 				log.Printf("Received %d byte from %s", bytesRead, sourceAddr.String())
 				err = l.handleUdpPacket(buffer, conn)
-				if err != nil{
+				if err != nil {
 					log.Println(err)
 				}
 			}
@@ -77,17 +77,19 @@ func (l *LinkLayer) Initialize (configFile string) error{
 	return nil
 }
 
-func (l *LinkLayer) SendIpPacket(ifName string, nextHopIp netip.Addr, packet common.IpPacket) error{
-	
+func (l *LinkLayer) SendIpPacket(ifName string, nextHopIp netip.Addr, packet common.IpPacket) error {
+	if l.IfaceStatus[ifName] == "down" {
+		return nil
+	}
 	// compute checksum
 	headerBytes, err := packet.Header.Marshal()
 	if err != nil {
 		return err
 	}
 	packet.Header.Checksum = int(computeChecksum(headerBytes)) + 1
-	// assing src for ip header 
-	for _, i := range(l.LinklayerConfig.Interfaces){
-		if i.Name == ifName{
+	// assing src for ip header
+	for _, i := range l.LinklayerConfig.Interfaces {
+		if i.Name == ifName {
 			packet.Header.Src = i.AssignedIP
 		}
 	}
@@ -96,16 +98,16 @@ func (l *LinkLayer) SendIpPacket(ifName string, nextHopIp netip.Addr, packet com
 	if err != nil {
 		log.Fatalln("Error marshalling header:  ", err)
 	}
-	
+
 	// Append header + message into one byte array
-	bytesToSend := make([]byte, 0, len(headerBytes) + len(packet.Message))
+	bytesToSend := make([]byte, 0, len(headerBytes)+len(packet.Message))
 	bytesToSend = append(bytesToSend, headerBytes...)
 	bytesToSend = append(bytesToSend, packet.Message...)
 
 	// now the data to be send is ready, next is to deal with conn and addr
 	var udpAddr *net.UDPAddr
-	for _, neighbor := range l.LinklayerConfig.Neighbors{
-		if neighbor.DestAddr == nextHopIp{
+	for _, neighbor := range l.LinklayerConfig.Neighbors {
+		if neighbor.DestAddr == nextHopIp {
 			udpAddr = &net.UDPAddr{
 				IP:   neighbor.UDPAddr.Addr().AsSlice(),
 				Port: int(neighbor.UDPAddr.Port()),
@@ -113,24 +115,22 @@ func (l *LinkLayer) SendIpPacket(ifName string, nextHopIp netip.Addr, packet com
 			break
 		}
 	}
-	if udpAddr == nil{
+	if udpAddr == nil {
 		return fmt.Errorf("sending addr does not exist in this subnet")
 	}
 	conn, ok := l.connMap[ifName]
 	if !ok {
 		return fmt.Errorf("interface does not exist")
-	} 
+	}
 	bytesWritten, err := conn.WriteToUDP(bytesToSend, udpAddr)
 	if err != nil {
-		return err 
+		return err
 	}
 	log.Printf("Sent %d bytes\n", bytesWritten)
-	return nil 
+	return nil
 }
 
-
-
-func (l *LinkLayer) handleUdpPacket(buffer []byte, conn *net.UDPConn) error{
+func (l *LinkLayer) handleUdpPacket(buffer []byte, conn *net.UDPConn) error {
 	// Marshal the received byte array into a UDP header
 	hdr, err := ipv4header.ParseHeader(buffer)
 	if err != nil {
@@ -145,22 +145,22 @@ func (l *LinkLayer) handleUdpPacket(buffer []byte, conn *net.UDPConn) error{
 	if ValidateChecksum(headerBytes, checksumFromHeader) == 0 {
 		log.Println("invalid checksum")
 		return nil
-	} 
+	}
 
 	message := buffer[headerSize:]
 	ipPacket := &common.IpPacket{
-		Header: 	hdr,
-		Message:    message,
+		Header:  hdr,
+		Message: message,
 	}
 
 	localAddr, _ := netip.ParseAddrPort(conn.LocalAddr().String())
-	for _, i := range l.LinklayerConfig.Interfaces{
-		if i.UDPAddr == localAddr{
-			if(l.IfaceStatus[i.Name] == "down") {
+	for _, i := range l.LinklayerConfig.Interfaces {
+		if i.UDPAddr == localAddr {
+			if l.IfaceStatus[i.Name] == "down" {
 				return nil
 			}
 			err := l.networkLayer.ReceiveIpPacket(ipPacket, i.AssignedIP)
-			_ = err 
+			_ = err
 			break
 		}
 	}
