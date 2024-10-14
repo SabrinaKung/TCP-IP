@@ -86,6 +86,8 @@ func runCLI(network *network_layer.NetworkLayer, link *link_layer.LinkLayer) {
 			listInterfaces(link)
 		case "ln":
 			listNeighbors(link)
+		case "lr":
+			listRoutes(network)
 		case "up":
 			if len(parts) != 2 {
 				fmt.Println("Usage: up <ifname>")
@@ -101,7 +103,7 @@ func runCLI(network *network_layer.NetworkLayer, link *link_layer.LinkLayer) {
 		case "exit", "q":
 			return
 		default:
-			fmt.Println("Unknown command. Available commands: send, li, ln, exit, q")
+			fmt.Println("Unknown command. Available commands: send, li, ln, lr, exit, q")
 		}
 	}
 }
@@ -140,5 +142,33 @@ func listNeighbors(link *link_layer.LinkLayer) {
 					neighbor.UDPAddr)
 			}
 		}
+	}
+}
+
+func listRoutes(network *network_layer.NetworkLayer) {
+	fmt.Println("T       Prefix  Next hop   Cost")
+	for _, entry := range network.ForwardingTable {
+		routeType := ""
+		nextHop := ""
+		var cost interface{} = entry.Cost // Use interface{} to allow string or int
+
+		switch entry.RoutingType {
+		case network_layer.RoutingTypeLocal:
+			routeType = "L"
+			nextHop = fmt.Sprintf("LOCAL:%s", entry.NextHopIface)
+		case network_layer.RoutingTypeRip:
+			routeType = "R"
+			nextHop = entry.NextHopIP.String()
+		case network_layer.RoutingTypeStatic:
+			routeType = "S"
+			nextHop = entry.NextHopIP.String()
+			cost = "-" // Static routes display "-" for cost
+		}
+
+		fmt.Printf("%-1s  %11s  %-9s  %4v\n",
+			routeType,
+			entry.Prefix,
+			nextHop,
+			cost)
 	}
 }

@@ -11,26 +11,26 @@ import (
 )
 
 type fwdTableEntry struct {
-	routingType  routingType
-	nextHopIP    netip.Addr
-	nextHopIface string
-	prefix       netip.Prefix
-	cost         int
+	RoutingType  RoutingType
+	NextHopIP    netip.Addr
+	NextHopIface string
+	Prefix       netip.Prefix
+	Cost         int
 }
 
 func (n *NetworkLayer) insertEntry(entry fwdTableEntry) {
 	n.ForwardingTable = append(n.ForwardingTable, entry)
 	// Sort by prefix length in descending order
 	sort.Slice(n.ForwardingTable, func(i, j int) bool {
-		return n.ForwardingTable[i].prefix.Bits() > n.ForwardingTable[j].prefix.Bits()
+		return n.ForwardingTable[i].Prefix.Bits() > n.ForwardingTable[j].Prefix.Bits()
 	})
 }
 
 func (n *NetworkLayer) lookup(ip netip.Addr) *fwdTableEntry {
 	for _, entry := range n.ForwardingTable {
-		if entry.prefix.Contains(ip) {
-			if entry.routingType != routingTypeLocal {
-				return n.lookup(entry.nextHopIP)
+		if entry.Prefix.Contains(ip) {
+			if entry.RoutingType != RoutingTypeLocal {
+				return n.lookup(entry.NextHopIP)
 			} else {
 				return &entry
 			}
@@ -40,9 +40,9 @@ func (n *NetworkLayer) lookup(ip netip.Addr) *fwdTableEntry {
 }
 func (n *NetworkLayer) lookupNextIp(ip netip.Addr) netip.Addr {
 	for _, entry := range n.ForwardingTable {
-		if entry.prefix.Contains(ip) {
-			if entry.routingType != routingTypeLocal {
-				return entry.nextHopIP
+		if entry.Prefix.Contains(ip) {
+			if entry.RoutingType != RoutingTypeLocal {
+				return entry.NextHopIP
 			} else {
 				return ip
 			}
@@ -51,12 +51,12 @@ func (n *NetworkLayer) lookupNextIp(ip netip.Addr) netip.Addr {
 	return ip
 }
 
-type routingType int
+type RoutingType int
 
 const (
-	routingTypeLocal  routingType = 0
-	routingTypeRip    routingType = 1
-	routingTypeStatic routingType = 2
+	RoutingTypeLocal  RoutingType = 0
+	RoutingTypeRip    RoutingType = 1
+	RoutingTypeStatic RoutingType = 2
 )
 
 type NetworkLayer struct {
@@ -81,23 +81,23 @@ func (n *NetworkLayer) Initialize(configFile string, isRouter bool) error {
 	// Initialize static route
 	for prefix, addr := range temp.StaticRoutes {
 		entry := fwdTableEntry{
-			routingType: routingTypeStatic,
-			nextHopIP:   addr,
-			cost:        0,
-			prefix:      prefix,
+			RoutingType: RoutingTypeStatic,
+			NextHopIP:   addr,
+			Cost:        0,
+			Prefix:      prefix,
 		}
 		n.insertEntry(entry)
 	}
 	// Initialize local route
 	for _, neighbor := range temp.Neighbors {
 		entry := fwdTableEntry{
-			routingType:  routingTypeLocal,
-			nextHopIface: neighbor.InterfaceName,
-			cost:         0,
+			RoutingType:  RoutingTypeLocal,
+			NextHopIface: neighbor.InterfaceName,
+			Cost:         0,
 		}
 		for _, iFace := range temp.Interfaces {
 			if iFace.Name == neighbor.InterfaceName {
-				entry.prefix = iFace.AssignedPrefix
+				entry.Prefix = iFace.AssignedPrefix
 				break
 			}
 		}
@@ -143,7 +143,7 @@ func (n *NetworkLayer) SendIP(dst netip.Addr, protocolNum uint8, data []byte) er
 	if !nextIp.IsValid() {
 		return fmt.Errorf("next IP for destination %v is nil", dst)
 	}
-	err := n.linkLayer.SendIpPacket(fwdEntry.nextHopIface, nextIp, packet)
+	err := n.linkLayer.SendIpPacket(fwdEntry.NextHopIface, nextIp, packet)
 	if err != nil {
 		return err
 	}
@@ -164,7 +164,7 @@ func (n *NetworkLayer) ReceiveIpPacket(packet *common.IpPacket, thisHopIp netip.
 			packet.Header.TTL -= 1
 			fwdEntry := n.lookup(dst)
 			nextIp := n.lookupNextIp(dst)
-			err := n.linkLayer.SendIpPacket(fwdEntry.nextHopIface, nextIp, *packet)
+			err := n.linkLayer.SendIpPacket(fwdEntry.NextHopIface, nextIp, *packet)
 			if err != nil {
 				return err
 			}
