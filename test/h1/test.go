@@ -56,7 +56,7 @@ func main(){
 	}
 }
 
-func myPacketHandler(packet *common.IpPacket) error {
+func myPacketHandler(packet *common.IpPacket, networkApi common.NetworkLayerAPI) error {
     fmt.Printf("Packet from %s to %s\n", packet.Header.Src, packet.Header.Dst)
 	fmt.Println(string(packet.Message))
     return nil

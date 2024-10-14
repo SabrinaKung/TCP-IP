@@ -2,10 +2,13 @@ package network_layer
 
 import (
 	"fmt"
+	"log"
 	"net/netip"
 	"sort"
+	"sync/atomic"
 	"team21/ip/pkg/common"
 	"team21/ip/pkg/lnxconfig"
+	"time"
 
 	ipv4header "github.com/brown-csci1680/iptcp-headers"
 )
@@ -16,9 +19,10 @@ type fwdTableEntry struct {
 	NextHopIface string
 	Prefix       netip.Prefix
 	Cost         int
+	lifeTime     *int32
 }
 
-func (n *NetworkLayer) insertEntry(entry fwdTableEntry) {
+func (n *NetworkLayer) insertEntry(entry *fwdTableEntry) {
 	n.ForwardingTable = append(n.ForwardingTable, entry)
 	// Sort by prefix length in descending order
 	sort.Slice(n.ForwardingTable, func(i, j int) bool {
@@ -32,7 +36,7 @@ func (n *NetworkLayer) lookup(ip netip.Addr) *fwdTableEntry {
 			if entry.RoutingType != RoutingTypeLocal {
 				return n.lookup(entry.NextHopIP)
 			} else {
-				return &entry
+				return entry
 			}
 		}
 	}
@@ -62,7 +66,7 @@ const (
 type NetworkLayer struct {
 	linkLayer       common.LinkLayerAPI
 	ripNeighbors    []netip.Addr
-	ForwardingTable []fwdTableEntry
+	ForwardingTable []*fwdTableEntry
 	handlerMap      map[uint8]common.HandlerFunc
 	isRouter        bool
 }
@@ -76,24 +80,30 @@ func (n *NetworkLayer) Initialize(configFile string, isRouter bool) error {
 	if err != nil {
 		return err
 	}
-	n.handlerMap = make(map[uint8]func(*common.IpPacket) error)
+	n.handlerMap = make(map[uint8]func(*common.IpPacket, common.NetworkLayerAPI) error)
 
 	// Initialize static route
 	for prefix, addr := range temp.StaticRoutes {
+		var lifeTime int32
+		atomic.StoreInt32(&lifeTime, 12)
 		entry := fwdTableEntry{
 			RoutingType: RoutingTypeStatic,
 			NextHopIP:   addr,
 			Cost:        0,
 			Prefix:      prefix,
+			lifeTime:    &lifeTime,
 		}
-		n.insertEntry(entry)
+		n.insertEntry(&entry)
 	}
 	// Initialize local route
 	for _, neighbor := range temp.Neighbors {
+		var lifeTime int32
+		atomic.StoreInt32(&lifeTime, 12)
 		entry := fwdTableEntry{
 			RoutingType:  RoutingTypeLocal,
 			NextHopIface: neighbor.InterfaceName,
 			Cost:         0,
+			lifeTime:     &lifeTime,
 		}
 		for _, iFace := range temp.Interfaces {
 			if iFace.Name == neighbor.InterfaceName {
@@ -101,13 +111,14 @@ func (n *NetworkLayer) Initialize(configFile string, isRouter bool) error {
 				break
 			}
 		}
-		n.insertEntry(entry)
+		n.insertEntry(&entry)
 	}
 
 	// Initialize RipNeighbors
 	if isRouter {
 		n.isRouter = true
 		n.ripNeighbors = temp.RipNeighbors
+		go n.countdownLifetime()
 	}
 	return nil
 }
@@ -157,7 +168,7 @@ func (n *NetworkLayer) ReceiveIpPacket(packet *common.IpPacket, thisHopIp netip.
 	if n.isRouter {
 		if packet.Header.Dst == thisHopIp { // package sent to router, usually is RIP package
 			if handler, exists := n.handlerMap[uint8(packet.Header.Protocol)]; exists {
-				handler(packet)
+				handler(packet, n)
 			}
 		} else { // not my package, need to forward
 			dst := packet.Header.Dst
@@ -174,16 +185,81 @@ func (n *NetworkLayer) ReceiveIpPacket(packet *common.IpPacket, thisHopIp netip.
 	} else { //host does not need to forward package
 		if packet.Header.Dst == thisHopIp {
 			if handler, exists := n.handlerMap[uint8(packet.Header.Protocol)]; exists {
-				handler(packet)
+				handler(packet, n)
 			}
 		}
 	}
 	return nil
 }
+
+func (n *NetworkLayer) UpdateFwdTable(ripMsg *common.RipMessage, src netip.Addr) error {
+	for _, entry := range ripMsg.Entries {
+		Prefix := ripMsg.Uint32ToPrefix(entry.Address, entry.Mask)
+		// todo update fwdtable according to ripmsg and src
+
+	}
+	return nil
+}
+
 func (n *NetworkLayer) RegisterRecvHandler(protocolNum uint8, callbackFunc common.HandlerFunc) error {
 	if _, exists := n.handlerMap[protocolNum]; exists {
 		return fmt.Errorf("handler for protocol %d already exists", protocolNum)
 	}
 	n.handlerMap[protocolNum] = callbackFunc
+	return nil
+}
+
+func (n *NetworkLayer) countdownLifetime() {
+	for {
+		for i := 0; i < len(n.ForwardingTable); i++ {
+			entry := n.ForwardingTable[i]
+			if entry.RoutingType == RoutingTypeRip {
+				newLifeTime := atomic.AddInt32(entry.lifeTime, -1)
+				if newLifeTime <= 0 {
+					// Set the route’s cost to infinity (16)
+					entry.Cost = common.Infinite
+					// Send a triggered update
+					err := n.AdvertiseNeighbors()
+					if err != nil {
+						log.Println(err)
+					}
+					// Remove the route from the routing table
+					n.ForwardingTable = append(n.ForwardingTable[:i], n.ForwardingTable[i+1:]...)
+				}
+			}
+		}
+		time.Sleep(time.Second)
+	}
+}
+
+func (n *NetworkLayer) AdvertiseNeighbors() error {
+	for _, neighbor := range n.ripNeighbors {
+		msg := &common.RipMessage{
+			Command:    2,
+			NumEntries: uint16(len(n.ForwardingTable)),
+		}
+		for _, entry := range n.ForwardingTable {
+			ripEntry := &common.RipEntry{}
+
+			// Split horizon with poisoned reverse
+			if entry.RoutingType == RoutingTypeRip && entry.NextHopIP == neighbor {
+				ripEntry.Cost = uint32(common.Infinite)
+			} else {
+				ripEntry.Cost = uint32(entry.Cost)
+			}
+			ripEntry.Mask = msg.PrefixToMask(entry.Prefix.Bits())
+			ripEntry.Address = msg.IpToUint32(entry.Prefix.Addr())
+			msg.Entries = append(msg.Entries, *ripEntry)
+		}
+		msgByte, err := msg.MarshalBinary()
+		if err != nil {
+			return err
+		}
+		err = n.SendIP(neighbor, common.ProtocolTypeRip, msgByte)
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }

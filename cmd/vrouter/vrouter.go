@@ -11,6 +11,7 @@ import (
 	"team21/ip/pkg/common"
 	"team21/ip/pkg/link_layer"
 	"team21/ip/pkg/network_layer"
+	"time"
 )
 
 func main() {
@@ -38,16 +39,42 @@ func main() {
 
 	network.RegisterRecvHandler(0, myPacketHandler)
 
+	// every 5 seconds, send RIP updates
+	go func(){
+		for {
+			err := network.AdvertiseNeighbors()
+			if err != nil{
+				fmt.Println(err)
+			}
+			time.Sleep(5 * time.Second)
+		}
+	}()
+
 	// Start the command-line interface
 	runCLI(network, link)
 }
 
-func myPacketHandler(packet *common.IpPacket) error {
+func myPacketHandler(packet *common.IpPacket, networkApi common.NetworkLayerAPI) error {
 	fmt.Printf("Received test packet: Src: %s, Dst: %s, TTL: %d, Data: %s\n",
 		packet.Header.Src,
 		packet.Header.Dst,
 		packet.Header.TTL,
 		string(packet.Message))
+	return nil
+}
+
+func myRipHandler(packet *common.IpPacket, networkApi common.NetworkLayerAPI) error {
+	hdr := packet.Header
+	msgByte := packet.Message
+	ripMsg := &common.RipMessage{}
+	err := ripMsg.UnmarshalBinary(msgByte)
+	if err != nil {
+		return err
+	}
+	err = networkApi.UpdateFwdTable(ripMsg, hdr.Src)
+	if err!= nil{
+		return err
+	}
 	return nil
 }
 

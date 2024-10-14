@@ -42,7 +42,7 @@ func main() {
 	runCLI(network, link)
 }
 
-func myPacketHandler(packet *common.IpPacket) error {
+func myPacketHandler(packet *common.IpPacket, networkApi common.NetworkLayerAPI) error {
 	fmt.Printf("Received test packet: Src: %s, Dst: %s, TTL: %d, Data: %s\n",
 		packet.Header.Src,
 		packet.Header.Dst,
