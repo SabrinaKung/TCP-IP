@@ -37,13 +37,14 @@ func main() {
 		log.Fatalf("Failed to initialize network layer: %v", err)
 	}
 
-	network.RegisterRecvHandler(0, myPacketHandler)
+	network.RegisterRecvHandler(common.ProtocolTypeTest, myPacketHandler)
+	network.RegisterRecvHandler(common.ProtocolTypeRip, myRipHandler)
 
 	// every 5 seconds, send RIP updates
-	go func(){
+	go func() {
 		for {
-			err := network.AdvertiseNeighbors()
-			if err != nil{
+			err := network.AdvertiseNeighbors(false)
+			if err != nil {
 				fmt.Println(err)
 			}
 			time.Sleep(5 * time.Second)
@@ -71,10 +72,16 @@ func myRipHandler(packet *common.IpPacket, networkApi common.NetworkLayerAPI) er
 	if err != nil {
 		return err
 	}
+
+	if ripMsg.Command == 1 { // RIP request
+		return networkApi.AdvertiseNeighbors(true)
+	}
+
 	err = networkApi.UpdateFwdTable(ripMsg, hdr.Src)
-	if err!= nil{
+	if err != nil {
 		return err
 	}
+
 	return nil
 }
 
