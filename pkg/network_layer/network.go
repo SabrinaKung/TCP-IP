@@ -112,6 +112,7 @@ func (n *NetworkLayer) Initialize(configFile string, isRouter bool) error {
 				break
 			}
 		}
+		// todo iterate fwdtable
 		n.insertEntry(&entry)
 	}
 
@@ -144,9 +145,6 @@ func (n *NetworkLayer) SendIP(dst netip.Addr, protocolNum uint8, data []byte) er
 		Message: data,
 	}
 
-	if n == nil {
-		return fmt.Errorf("NetworkLayer is nil")
-	}
 	fwdEntry := n.lookup(dst)
 	if fwdEntry == nil {
 		return fmt.Errorf("forwarding entry for destination %v is nil", dst)
@@ -176,6 +174,9 @@ func (n *NetworkLayer) ReceiveIpPacket(packet *common.IpPacket, thisHopIp netip.
 			packet.Header.TTL -= 1
 			fwdEntry := n.lookup(dst)
 			nextIp := n.lookupNextIp(dst)
+			if fwdEntry == nil {
+				return nil
+			}
 			err := n.linkLayer.SendIpPacket(fwdEntry.NextHopIface, nextIp, *packet)
 			if err != nil {
 				return err

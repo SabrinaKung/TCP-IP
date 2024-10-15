@@ -62,11 +62,13 @@ func (l *LinkLayer) Initialize(configFile string) error {
 		go func() {
 			for {
 				buffer := make([]byte, common.MessageSize)
-				bytesRead, sourceAddr, err := conn.ReadFromUDP(buffer)
+				// bytesRead, sourceAddr, err := conn.ReadFromUDP(buffer)
+				_, _, err := conn.ReadFromUDP(buffer)
 				if err != nil {
 					log.Println(err)
 				}
-				log.Printf("Received %d byte from %s", bytesRead, sourceAddr.String())
+
+				// log.Printf("Received %d byte from %s", bytesRead, sourceAddr.String())
 				err = l.handleUdpPacket(buffer, conn)
 				if err != nil {
 					log.Println(err)
@@ -79,7 +81,7 @@ func (l *LinkLayer) Initialize(configFile string) error {
 
 func (l *LinkLayer) SendIpPacket(ifName string, nextHopIp netip.Addr, packet common.IpPacket) error {
 	if l.IfaceStatus[ifName] == "down" {
-		return nil
+		return fmt.Errorf("interface %s is down", ifName)
 	}
 	// compute checksum
 	headerBytes, err := packet.Header.Marshal()
@@ -122,11 +124,11 @@ func (l *LinkLayer) SendIpPacket(ifName string, nextHopIp netip.Addr, packet com
 	if !ok {
 		return fmt.Errorf("interface does not exist")
 	}
-	bytesWritten, err := conn.WriteToUDP(bytesToSend, udpAddr)
+	_, err = conn.WriteToUDP(bytesToSend, udpAddr)
 	if err != nil {
 		return err
 	}
-	log.Printf("Sent %d bytes\n", bytesWritten)
+	// log.Printf("Sent %d bytes\n", bytesWritten)
 	return nil
 }
 
@@ -157,7 +159,7 @@ func (l *LinkLayer) handleUdpPacket(buffer []byte, conn *net.UDPConn) error {
 	for _, i := range l.LinklayerConfig.Interfaces {
 		if i.UDPAddr == localAddr {
 			if l.IfaceStatus[i.Name] == "down" {
-				return nil
+				return fmt.Errorf("interface %s is down", i.Name)
 			}
 			err := l.networkLayer.ReceiveIpPacket(ipPacket, i.AssignedIP)
 			_ = err
