@@ -204,7 +204,7 @@ func (n *NetworkLayer) UpdateFwdTable(ripMsg *common.RipMessage, src netip.Addr)
 			return fmt.Errorf("neighbor %s not found", src)
 		}
 
-		newCost := receivedCost + costToNeighbor
+		newCost := receivedCost + costToNeighbor + 1
 		if newCost >= common.Infinite {
 			newCost = common.Infinite
 		}
