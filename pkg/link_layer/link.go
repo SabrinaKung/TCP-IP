@@ -89,12 +89,6 @@ func (l *LinkLayer) SendIpPacket(ifName string, nextHopIp netip.Addr, packet com
 		return err
 	}
 	packet.Header.Checksum = int(computeChecksum(headerBytes)) + 1
-	// assing src for ip header
-	for _, i := range l.LinklayerConfig.Interfaces {
-		if i.Name == ifName {
-			packet.Header.Src = i.AssignedIP
-		}
-	}
 
 	headerBytes, err = packet.Header.Marshal()
 	if err != nil {

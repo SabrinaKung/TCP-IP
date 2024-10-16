@@ -65,13 +65,14 @@ const (
 )
 
 type NetworkLayer struct {
-	linkLayer       		common.LinkLayerAPI
-	ripNeighbors    		[]netip.Addr
-	ForwardingTable 		[]*fwdTableEntry
-	handlerMap      		map[uint8]common.HandlerFunc
-	isRouter        		bool
-	PeriodicUpdateRate 		int32
-	routeTimeoutThreshold	int32
+	linkLayer             common.LinkLayerAPI
+	ripNeighbors          []netip.Addr
+	ForwardingTable       []*fwdTableEntry
+	handlerMap            map[uint8]common.HandlerFunc
+	isRouter              bool
+	PeriodicUpdateRate    int32
+	routeTimeoutThreshold int32
+	ifaceToIp             map[string]netip.Addr
 }
 
 func (n *NetworkLayer) SetLinkLayerApi(linkLayer common.LinkLayerAPI) {
@@ -84,6 +85,11 @@ func (n *NetworkLayer) Initialize(configFile string, isRouter bool) error {
 		return err
 	}
 	n.handlerMap = make(map[uint8]func(*common.IpPacket, common.NetworkLayerAPI) error)
+
+	n.ifaceToIp = make(map[string]netip.Addr)
+	for _, iFace := range temp.Interfaces{
+		n.ifaceToIp[iFace.Name] = iFace.AssignedIP
+	}
 
 	// Initialize static route
 	for prefix, addr := range temp.StaticRoutes {
@@ -110,11 +116,21 @@ func (n *NetworkLayer) Initialize(configFile string, isRouter bool) error {
 		}
 		for _, iFace := range temp.Interfaces {
 			if iFace.Name == neighbor.InterfaceName {
-				entry.Prefix = iFace.AssignedPrefix
+				// avoid repeatedly adding the same prefix
+				flag := true
+				for _, e := range n.ForwardingTable {
+					if e.Prefix == iFace.AssignedPrefix {
+						flag = false
+						break
+					}
+				}
+				if flag {
+					entry.Prefix = iFace.AssignedPrefix
+					n.insertEntry(&entry)
+				}
 				break
 			}
 		}
-		n.insertEntry(&entry)
 	}
 
 	// Initialize RipNeighbors
@@ -130,6 +146,7 @@ func (n *NetworkLayer) Initialize(configFile string, isRouter bool) error {
 			n.routeTimeoutThreshold = int32(temp.RipTimeoutThreshold.Seconds())
 		}
 		go n.countdownLifetime()
+		n.AdvertiseNeighbors(false)
 	}
 	return nil
 }
@@ -149,6 +166,7 @@ func (n *NetworkLayer) SendIP(dst netip.Addr, protocolNum uint8, data []byte) er
 		Dst:      dst,
 		Options:  []byte{},
 	}
+
 	packet := common.IpPacket{
 		Header:  hdr,
 		Message: data,
@@ -162,6 +180,9 @@ func (n *NetworkLayer) SendIP(dst netip.Addr, protocolNum uint8, data []byte) er
 	if !nextIp.IsValid() {
 		return fmt.Errorf("next IP for destination %v is nil", dst)
 	}
+
+	packet.Header.Src = n.ifaceToIp[fwdEntry.NextHopIface]
+
 	err := n.linkLayer.SendIpPacket(fwdEntry.NextHopIface, nextIp, packet)
 	if err != nil {
 		return err
