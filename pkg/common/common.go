@@ -32,16 +32,16 @@ func (d *RipMessage) MarshalBinary() ([]byte, error) {
 	buf := new(bytes.Buffer)
 
 	// Write Command and NumEntries
-	if err := binary.Write(buf, binary.LittleEndian, d.Command); err != nil {
+	if err := binary.Write(buf, binary.BigEndian, d.Command); err != nil {
 		return nil, err
 	}
-	if err := binary.Write(buf, binary.LittleEndian, d.NumEntries); err != nil {
+	if err := binary.Write(buf, binary.BigEndian, d.NumEntries); err != nil {
 		return nil, err
 	}
 
 	// Write all entries
 	for _, entry := range d.Entries {
-		if err := binary.Write(buf, binary.LittleEndian, entry); err != nil {
+		if err := binary.Write(buf, binary.BigEndian, entry); err != nil {
 			return nil, err
 		}
 	}
@@ -54,17 +54,17 @@ func (d *RipMessage) UnmarshalBinary(RipMessage []byte) error {
 	buf := bytes.NewReader(RipMessage)
 
 	// Read Command and NumEntries
-	if err := binary.Read(buf, binary.LittleEndian, &d.Command); err != nil {
+	if err := binary.Read(buf, binary.BigEndian, &d.Command); err != nil {
 		return err
 	}
-	if err := binary.Read(buf, binary.LittleEndian, &d.NumEntries); err != nil {
+	if err := binary.Read(buf, binary.BigEndian, &d.NumEntries); err != nil {
 		return err
 	}
 
 	// Read all entries
 	d.Entries = make([]RipEntry, d.NumEntries)
 	for i := 0; i < int(d.NumEntries); i++ {
-		if err := binary.Read(buf, binary.LittleEndian, &d.Entries[i]); err != nil {
+		if err := binary.Read(buf, binary.BigEndian, &d.Entries[i]); err != nil {
 			return err
 		}
 	}
