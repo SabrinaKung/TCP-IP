@@ -244,7 +244,7 @@ func (n *NetworkLayer) UpdateFwdTable(ripMsg *common.RipMessage, src netip.Addr)
 				existingEntry.Cost = newCost
 				atomic.StoreInt32(existingEntry.lifeTime, n.routeTimeoutThreshold)
 				// Trigger an update to neighbors
-				n.AdvertiseNeighbors(false)
+				n.AdvertiseNeighbors(true)
 			} else if newCost == existingEntry.Cost && existingEntry.NextHopIP == src {
 				// No change, just refresh timeout
 				atomic.StoreInt32(existingEntry.lifeTime, n.routeTimeoutThreshold)
@@ -291,7 +291,7 @@ func (n *NetworkLayer) countdownLifetime() {
 					// Set the route’s cost to infinity (16)
 					entry.Cost = common.Infinite
 					// Send a triggered update
-					err := n.AdvertiseNeighbors(false)
+					err := n.AdvertiseNeighbors(true)
 					if err != nil {
 						log.Println(err)
 					}

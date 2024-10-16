@@ -43,7 +43,7 @@ func main() {
 	// every 5 seconds, send RIP updates
 	go func() {
 		for {
-			err := network.AdvertiseNeighbors(false)
+			err := network.AdvertiseNeighbors(true)
 			if err != nil {
 				fmt.Println(err)
 			}
