@@ -9,7 +9,7 @@ import (
 	"team21/ip/pkg/common"
 	"team21/ip/pkg/lnxconfig"
 	"time"
-
+	"github.com/google/netstack/tcpip/header"
 	ipv4header "github.com/brown-csci1680/iptcp-headers"
 )
 
@@ -172,6 +172,13 @@ func (n *NetworkLayer) SendIP(dst netip.Addr, protocolNum uint8, data []byte) er
 		Message: data,
 	}
 
+	// compute checksum
+	headerBytes, err := packet.Header.Marshal()
+	if err != nil {
+		return err
+	}
+	packet.Header.Checksum = int(computeChecksum(headerBytes)) + 1
+
 	fwdEntry := n.lookup(dst)
 	if fwdEntry == nil {
 		return fmt.Errorf("forwarding entry for destination %v is nil", dst)
@@ -183,7 +190,7 @@ func (n *NetworkLayer) SendIP(dst netip.Addr, protocolNum uint8, data []byte) er
 
 	packet.Header.Src = n.ifaceToIp[fwdEntry.NextHopIface]
 
-	err := n.linkLayer.SendIpPacket(fwdEntry.NextHopIface, nextIp, packet)
+	err = n.linkLayer.SendIpPacket(fwdEntry.NextHopIface, nextIp, packet)
 	if err != nil {
 		return err
 	}
@@ -194,6 +201,17 @@ func (n *NetworkLayer) ReceiveIpPacket(packet *common.IpPacket, thisHopIp netip.
 	if packet.Header.TTL == 0 {
 		return nil // Drop packet with expired TTL
 	}
+
+	// validate checksum
+	err, result := validateChecksum(packet)
+	if err != nil {
+		return err
+	}
+	if result == 0{
+		log.Println("invalid checksum")
+		return nil
+	}
+
 	if n.isRouter {
 		if packet.Header.Dst == thisHopIp { // package sent to router, usually is RIP package
 			if handler, exists := n.handlerMap[uint8(packet.Header.Protocol)]; exists {
@@ -366,4 +384,26 @@ func (n *NetworkLayer) AdvertiseNeighbors(isResponse bool) error {
 	}
 
 	return nil
+}
+
+func computeChecksum(b []byte) uint16 {
+	checksum := header.Checksum(b, 0)
+
+	// Invert the checksum value.  Why is this necessary?
+	// This function returns the inverse of the checksum
+	// on an initial computation.  While this may seem weird,
+	// it makes it easier to use this same function
+	// to validate the checksum on the receiving side.
+	// See ValidateChecksum in the receiver file for details.
+	checksumInv := checksum ^ 0xffff
+
+	return checksumInv
+}
+
+func validateChecksum(packet *common.IpPacket) (error, uint16) {
+	headerBytes, err := packet.Header.Marshal()
+	if err != nil {
+		return err, 0
+	}
+	return nil, header.Checksum(headerBytes, uint16(packet.Header.Checksum))
 }

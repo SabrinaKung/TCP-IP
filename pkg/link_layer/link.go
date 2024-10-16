@@ -9,7 +9,7 @@ import (
 	"team21/ip/pkg/lnxconfig"
 
 	ipv4header "github.com/brown-csci1680/iptcp-headers"
-	"github.com/google/netstack/tcpip/header"
+	
 )
 
 type LinklayerConfig struct {
@@ -83,14 +83,7 @@ func (l *LinkLayer) SendIpPacket(ifName string, nextHopIp netip.Addr, packet com
 	if l.IfaceStatus[ifName] == "down" {
 		return fmt.Errorf("interface %s is down", ifName)
 	}
-	// compute checksum
 	headerBytes, err := packet.Header.Marshal()
-	if err != nil {
-		return err
-	}
-	packet.Header.Checksum = int(computeChecksum(headerBytes)) + 1
-
-	headerBytes, err = packet.Header.Marshal()
 	if err != nil {
 		log.Fatalln("Error marshalling header:  ", err)
 	}
@@ -136,13 +129,6 @@ func (l *LinkLayer) handleUdpPacket(buffer []byte, conn *net.UDPConn) error {
 	headerSize := hdr.Len
 
 	// Validate the checksum
-	headerBytes := buffer[:headerSize]
-	checksumFromHeader := uint16(hdr.Checksum)
-	if ValidateChecksum(headerBytes, checksumFromHeader) == 0 {
-		log.Println("invalid checksum")
-		return nil
-	}
-
 	message := buffer[headerSize:]
 	ipPacket := &common.IpPacket{
 		Header:  hdr,
@@ -163,22 +149,3 @@ func (l *LinkLayer) handleUdpPacket(buffer []byte, conn *net.UDPConn) error {
 	return nil
 }
 
-func computeChecksum(b []byte) uint16 {
-	checksum := header.Checksum(b, 0)
-
-	// Invert the checksum value.  Why is this necessary?
-	// This function returns the inverse of the checksum
-	// on an initial computation.  While this may seem weird,
-	// it makes it easier to use this same function
-	// to validate the checksum on the receiving side.
-	// See ValidateChecksum in the receiver file for details.
-	checksumInv := checksum ^ 0xffff
-
-	return checksumInv
-}
-
-func ValidateChecksum(b []byte, fromHeader uint16) uint16 {
-	checksum := header.Checksum(b, fromHeader)
-
-	return checksum
-}
