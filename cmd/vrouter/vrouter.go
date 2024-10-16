@@ -47,7 +47,7 @@ func main() {
 			if err != nil {
 				fmt.Println(err)
 			}
-			time.Sleep(5 * time.Second)
+			time.Sleep(time.Duration(network.PeriodicUpdateRate) * time.Second)
 		}
 	}()
 

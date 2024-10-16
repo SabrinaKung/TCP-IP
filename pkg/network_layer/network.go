@@ -65,11 +65,13 @@ const (
 )
 
 type NetworkLayer struct {
-	linkLayer       common.LinkLayerAPI
-	ripNeighbors    []netip.Addr
-	ForwardingTable []*fwdTableEntry
-	handlerMap      map[uint8]common.HandlerFunc
-	isRouter        bool
+	linkLayer       		common.LinkLayerAPI
+	ripNeighbors    		[]netip.Addr
+	ForwardingTable 		[]*fwdTableEntry
+	handlerMap      		map[uint8]common.HandlerFunc
+	isRouter        		bool
+	PeriodicUpdateRate 		int32
+	routeTimeoutThreshold	int32
 }
 
 func (n *NetworkLayer) SetLinkLayerApi(linkLayer common.LinkLayerAPI) {
@@ -112,14 +114,21 @@ func (n *NetworkLayer) Initialize(configFile string, isRouter bool) error {
 				break
 			}
 		}
-		// todo iterate fwdtable
 		n.insertEntry(&entry)
 	}
 
 	// Initialize RipNeighbors
 	if isRouter {
+		n.PeriodicUpdateRate = common.DefaultPeriodicUpdateRate
+		n.routeTimeoutThreshold = common.DefaultRouteTimeoutThreshold
 		n.isRouter = true
 		n.ripNeighbors = temp.RipNeighbors
+		if temp.RipPeriodicUpdateRate != 0 {
+			n.PeriodicUpdateRate = int32(temp.RipPeriodicUpdateRate.Seconds())
+		}
+		if temp.RipTimeoutThreshold != 0 {
+			n.routeTimeoutThreshold = int32(temp.RipTimeoutThreshold.Seconds())
+		}
 		go n.countdownLifetime()
 	}
 	return nil
@@ -221,7 +230,7 @@ func (n *NetworkLayer) UpdateFwdTable(ripMsg *common.RipMessage, src netip.Addr)
 				Cost:        newCost,
 				lifeTime:    new(int32),
 			}
-			atomic.StoreInt32(newEntry.lifeTime, 12)
+			atomic.StoreInt32(newEntry.lifeTime, n.routeTimeoutThreshold)
 			n.insertEntry(newEntry)
 		} else {
 			// Rule 2: If table has entry <D, M, cold>
@@ -229,16 +238,16 @@ func (n *NetworkLayer) UpdateFwdTable(ripMsg *common.RipMessage, src netip.Addr)
 				// Lower cost, update
 				existingEntry.NextHopIP = src
 				existingEntry.Cost = newCost
-				atomic.StoreInt32(existingEntry.lifeTime, 12)
+				atomic.StoreInt32(existingEntry.lifeTime, n.routeTimeoutThreshold)
 			} else if newCost > existingEntry.Cost && existingEntry.NextHopIP == src {
 				// Cost increased for the current route
 				existingEntry.Cost = newCost
-				atomic.StoreInt32(existingEntry.lifeTime, 12)
+				atomic.StoreInt32(existingEntry.lifeTime, n.routeTimeoutThreshold)
 				// Trigger an update to neighbors
 				n.AdvertiseNeighbors(false)
 			} else if newCost == existingEntry.Cost && existingEntry.NextHopIP == src {
 				// No change, just refresh timeout
-				atomic.StoreInt32(existingEntry.lifeTime, 12)
+				atomic.StoreInt32(existingEntry.lifeTime, n.routeTimeoutThreshold)
 			}
 			// If newCost > existingEntry.cost && existingEntry.nextHopIP != src, ignore
 		}

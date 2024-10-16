@@ -14,6 +14,8 @@ const (
 	Infinite         = 16
 	ProtocolTypeTest = 0
 	ProtocolTypeRip  = 200
+	DefaultPeriodicUpdateRate = 5
+	DefaultRouteTimeoutThreshold = 12
 )
 
 type RipEntry struct {
