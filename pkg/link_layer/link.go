@@ -9,7 +9,6 @@ import (
 	"team21/ip/pkg/lnxconfig"
 
 	ipv4header "github.com/brown-csci1680/iptcp-headers"
-	
 )
 
 type LinklayerConfig struct {
@@ -81,7 +80,8 @@ func (l *LinkLayer) Initialize(configFile string) error {
 
 func (l *LinkLayer) SendIpPacket(ifName string, nextHopIp netip.Addr, packet common.IpPacket) error {
 	if l.IfaceStatus[ifName] == "down" {
-		return fmt.Errorf("interface %s is down", ifName)
+		// return fmt.Errorf("interface %s is down", ifName)
+		return nil
 	}
 	headerBytes, err := packet.Header.Marshal()
 	if err != nil {
@@ -139,7 +139,8 @@ func (l *LinkLayer) handleUdpPacket(buffer []byte, conn *net.UDPConn) error {
 	for _, i := range l.LinklayerConfig.Interfaces {
 		if i.UDPAddr == localAddr {
 			if l.IfaceStatus[i.Name] == "down" {
-				return fmt.Errorf("interface %s is down", i.Name)
+				// return fmt.Errorf("interface %s is down", i.Name)
+				return nil
 			}
 			err := l.networkLayer.ReceiveIpPacket(ipPacket, i.AssignedIP)
 			_ = err
@@ -148,4 +149,3 @@ func (l *LinkLayer) handleUdpPacket(buffer []byte, conn *net.UDPConn) error {
 	}
 	return nil
 }
-
