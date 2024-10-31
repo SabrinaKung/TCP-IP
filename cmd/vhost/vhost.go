@@ -7,11 +7,15 @@ import (
 	"log"
 	"net/netip"
 	"os"
+	"strconv"
 	"strings"
 	"team21/ip/pkg/common"
 	"team21/ip/pkg/link_layer"
 	"team21/ip/pkg/network_layer"
+	"team21/ip/pkg/tcp_layer"
 )
+
+var tcpStack *tcp_layer.Tcp
 
 func main() {
 	configFile := flag.String("config", "", "Path to the config file")
@@ -23,6 +27,7 @@ func main() {
 
 	link := &link_layer.LinkLayer{}
 	network := &network_layer.NetworkLayer{}
+	tcpStack = &tcp_layer.Tcp{}
 
 	link.SetNetworkLayerApi(network)
 	err := link.Initialize(*configFile)
@@ -37,6 +42,13 @@ func main() {
 	}
 
 	network.RegisterRecvHandler(0, myPacketHandler)
+	network.RegisterRecvHandler(common.ProtocolTypeTcp, tcpStack.HandleTCPPacket)
+
+	err = tcpStack.Initialize(*configFile)
+	if err != nil {
+		log.Fatalf("Failed to initialize TCP layer: %v", err)
+	}
+	tcpStack.SetNetworkLayerApi(network)
 
 	// Start the command-line interface
 	runCLI(network, link)
@@ -100,6 +112,12 @@ func runCLI(network *network_layer.NetworkLayer, link *link_layer.LinkLayer) {
 				continue
 			}
 			disableInterface(link, parts[1])
+		case "a":
+			handleAccept(parts[1:])
+		case "c":
+			handleConnect(parts[1:])
+		case "ls":
+			listSockets(tcpStack)
 		case "exit", "q":
 			return
 		default:
@@ -170,5 +188,81 @@ func listRoutes(network *network_layer.NetworkLayer) {
 			entry.Prefix,
 			nextHop,
 			cost)
+	}
+}
+
+func handleConnect(args []string) {
+	if len(args) != 2 {
+		fmt.Println("Usage: c <ip> <port>")
+		return
+	}
+
+	destIP, err := netip.ParseAddr(args[0])
+	if err != nil {
+		fmt.Printf("Invalid IP address: %v\n", err)
+		return
+	}
+
+	port, err := strconv.ParseUint(args[1], 10, 16)
+	if err != nil {
+		fmt.Printf("Invalid port number: %v\n", err)
+		return
+	}
+
+	_, err = tcpStack.Connect(destIP, uint16(port))
+	if err != nil {
+		fmt.Printf("Failed to connect: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Connected to %s:%d\n", destIP, port)
+}
+
+func handleAccept(args []string) {
+	if len(args) != 1 {
+		fmt.Println("Usage: a <port>")
+		return
+	}
+
+	port, err := strconv.ParseUint(args[0], 10, 16)
+	if err != nil {
+		fmt.Printf("Invalid port number: %v\n", err)
+		return
+	}
+
+	socket, err := tcpStack.Listen(uint16(port))
+	if err != nil {
+		fmt.Printf("Failed to listen: %v\n", err)
+		return
+	}
+
+	// Accept in a goroutine to not block the CLI
+	go func() {
+		newSocket, err := socket.Accept()
+		if err != nil {
+			fmt.Printf("Failed to accept: %v\n", err)
+			return
+		}
+		fmt.Printf("New connection on socket %d => created new socket %d\n",
+			socket.ID,
+			newSocket.ID)
+	}()
+}
+
+func listSockets(network *tcp_layer.Tcp) {
+	fmt.Println("SID      LAddr LPort       RAddr RPort     Status")
+
+	sockets := network.GetSockets()
+	for _, socket := range sockets {
+		laddr := socket.LocalAddr.String()
+		raddr := socket.RemoteAddr.String()
+
+		fmt.Printf("%-3d  %9s %-6d %10s %-6d    %s\n",
+			socket.ID,
+			laddr,
+			socket.LocalPort,
+			raddr,
+			socket.RemotePort,
+			socket.State)
 	}
 }

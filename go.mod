@@ -8,4 +8,7 @@ require (
 	github.com/pkg/errors v0.9.1
 )
 
-require github.com/google/btree v1.1.3 // indirect
+require (
+	github.com/gammazero/deque v0.2.1
+	github.com/google/btree v1.1.3 // indirect
+)

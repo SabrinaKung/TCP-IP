@@ -10,11 +10,12 @@ import (
 )
 
 const (
-	MessageSize      = 1024
-	Infinite         = 16
-	ProtocolTypeTest = 0
-	ProtocolTypeRip  = 200
-	DefaultPeriodicUpdateRate = 5
+	MessageSize                  = 1024
+	Infinite                     = 16
+	ProtocolTypeTest             = 0
+	ProtocolTypeRip              = 200
+	ProtocolTypeTcp              = 6
+	DefaultPeriodicUpdateRate    = 5
 	DefaultRouteTimeoutThreshold = 12
 )
 
