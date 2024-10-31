@@ -15,6 +15,23 @@ const (
 	ESTABLISHED
 )
 
+func (s TCPState) String() string {
+	switch s {
+	case CLOSED:
+		return "CLOSED"
+	case LISTEN:
+		return "LISTEN"
+	case SYN_SENT:
+		return "SYN_SENT"
+	case SYN_RECEIVED:
+		return "SYN_RECEIVED"
+	case ESTABLISHED:
+		return "ESTABLISHED"
+	default:
+		return "UNKNOWN"
+	}
+}
+
 type Socket struct {
 	ID int
 
@@ -36,13 +53,4 @@ type Socket struct {
 	// Buffer management (can be expanded in future milestones)
 	RecvBuffer []byte
 	SendBuffer []byte
-}
-
-type SocketManager struct {
-	// Map sockets by local port for listeners
-	ListeningSockets map[uint16]*Socket
-	// Map active sockets by connection tuple (local addr:port, remote addr:port)
-	ActiveSockets map[string]*Socket
-	// For generating initial sequence numbers
-	SeqNumGenerator uint32
 }

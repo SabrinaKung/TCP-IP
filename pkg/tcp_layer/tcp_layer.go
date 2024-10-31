@@ -26,23 +26,6 @@ type Connection struct {
 	socket *Socket
 }
 
-func (s TCPState) String() string {
-	switch s {
-	case CLOSED:
-		return "CLOSED"
-	case LISTEN:
-		return "LISTEN"
-	case SYN_SENT:
-		return "SYN_SENT"
-	case SYN_RECEIVED:
-		return "SYN_RECEIVED"
-	case ESTABLISHED:
-		return "ESTABLISHED"
-	default:
-		return "UNKNOWN"
-	}
-}
-
 func (t *Tcp) getNextSocketID() int {
 	t.socketMutex.Lock()
 	defer t.socketMutex.Unlock()
@@ -115,6 +98,7 @@ func (t *Tcp) Connect(addr netip.Addr, port uint16) (*Connection, error) {
 		header.TCPFlagSyn,
 	)
 	if err != nil {
+		t.removeSocket(socket) // Clean up on send error
 		return nil, fmt.Errorf("failed to send SYN: %v", err)
 	}
 
@@ -133,6 +117,7 @@ func (t *Tcp) Connect(addr netip.Addr, port uint16) (*Connection, error) {
 			}
 			socket.stateMutex.Unlock()
 		case <-timeout:
+			t.removeSocket(socket) // Clean up on timeout
 			return nil, fmt.Errorf("connection timeout")
 		}
 	}
@@ -162,11 +147,12 @@ func (s *Socket) Accept() (*Socket, error) {
 	}
 }
 
-func (s *Socket) Close() error {
-	// Update socket state
-	// Clean up resources
-	return nil
-}
+// func (t *Tcp) closeSocket(socket *Socket) {
+// 	socket.stateMutex.Lock()
+// 	socket.State = CLOSED
+// 	socket.stateMutex.Unlock()
+// 	t.removeSocket(socket)
+// }
 
 func (t *Tcp) HandleTCPPacket(packet *common.IpPacket, networkApi common.NetworkLayerAPI) error {
 	tcpHeader := header.TCP(packet.Message[:header.TCPMinimumSize])
