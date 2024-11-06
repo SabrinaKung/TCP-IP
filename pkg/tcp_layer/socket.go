@@ -1,8 +1,11 @@
 package tcp_layer
 
 import (
+	"fmt"
 	"net/netip"
 	"sync"
+
+	"github.com/google/netstack/tcpip/header"
 )
 
 type TCPState int
@@ -44,13 +47,65 @@ type Socket struct {
 	// State management
 	State      TCPState
 	stateMutex sync.Mutex
-	SeqNum     uint32
-	AckNum     uint32
 
 	// Channel for accepting new connections (for listener sockets)
 	AcceptChan chan *Socket
 
-	// Buffer management (can be expanded in future milestones)
-	RecvBuffer []byte
-	SendBuffer []byte
+	// Buffer management
+	sendBuffer *SendBuffer
+	recvBuffer *ReceiveBuffer
+
+	// Function to send packets
+	sendPacket SendPacketFunc
+}
+
+func (s *Socket) VWrite(data []byte) (int, error) {
+	if s.State != ESTABLISHED {
+		return 0, fmt.Errorf("socket not connected")
+	}
+
+	// Write data to send buffer
+	n, err := s.sendBuffer.Write(data)
+	if err != nil {
+		return 0, err
+	}
+
+	// Create segment
+	segment := &Segment{
+		Data:   data,
+		SeqNum: s.sendBuffer.sndNxt,
+		Length: len(data),
+	}
+
+	// Add to unacked segments before sending
+	s.sendBuffer.unackedSegments = append(s.sendBuffer.unackedSegments, segment)
+
+	// Try to send immediately
+	err = s.sendPacket(
+		s.LocalAddr,
+		s.LocalPort,
+		s.RemoteAddr,
+		s.RemotePort,
+		data,
+		header.TCPFlagAck, // Just ACK flag for data
+	)
+	if err != nil {
+		return 0, fmt.Errorf("failed to send: %v", err)
+	}
+
+	return n, nil
+}
+
+// VRead reads data from the socket
+func (s *Socket) VRead(n int) ([]byte, error) {
+	if s.State != ESTABLISHED {
+		return nil, fmt.Errorf("socket not connected")
+	}
+
+	data, err := s.recvBuffer.Read(n)
+	if err != nil {
+		return nil, err
+	}
+
+	return data, nil
 }

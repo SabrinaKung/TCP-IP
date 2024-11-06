@@ -118,6 +118,10 @@ func runCLI(network *network_layer.NetworkLayer, link *link_layer.LinkLayer) {
 			handleConnect(parts[1:])
 		case "ls":
 			listSockets(tcpStack)
+		case "s":
+			handleSend(parts[1:], tcpStack)
+		case "r":
+			handleReceive(parts[1:], tcpStack)
 		case "exit", "q":
 			return
 		default:
@@ -265,4 +269,87 @@ func listSockets(network *tcp_layer.Tcp) {
 			socket.RemotePort,
 			socket.State)
 	}
+}
+
+func handleSend(args []string, tcp *tcp_layer.Tcp) {
+	if len(args) != 2 {
+		fmt.Println("Usage: s <socket ID> <bytes>")
+		return
+	}
+
+	// Parse socket ID
+	socketID, err := strconv.Atoi(args[0])
+	if err != nil {
+		fmt.Printf("Invalid socket ID: %v\n", err)
+		return
+	}
+
+	// Get the socket
+	socket := findSocketByID(tcp, socketID)
+	if socket == nil {
+		fmt.Printf("Socket %d not found\n", socketID)
+		return
+	}
+
+	// Check if it's a listen socket
+	if socket.State == tcp_layer.LISTEN {
+		fmt.Println("Cannot send on listen socket")
+		return
+	}
+
+	// Send the data
+	data := []byte(args[1])
+	n, err := socket.VWrite(data)
+	if err != nil {
+		fmt.Printf("Send error: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Sent %d bytes\n", n)
+}
+
+func handleReceive(args []string, tcp *tcp_layer.Tcp) {
+	if len(args) != 2 {
+		fmt.Println("Usage: r <socket ID> <numbytes>")
+		return
+	}
+
+	// Parse socket ID and number of bytes
+	socketID, err := strconv.Atoi(args[0])
+	if err != nil {
+		fmt.Printf("Invalid socket ID: %v\n", err)
+		return
+	}
+
+	numBytes, err := strconv.Atoi(args[1])
+	if err != nil {
+		fmt.Printf("Invalid number of bytes: %v\n", err)
+		return
+	}
+
+	// Get the socket
+	socket := findSocketByID(tcp, socketID)
+	if socket == nil {
+		fmt.Printf("Socket %d not found\n", socketID)
+		return
+	}
+
+	// Read the data
+	data, err := socket.VRead(numBytes)
+	if err != nil {
+		fmt.Printf("Read error: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Read %d bytes: %s\n", len(data), string(data))
+}
+
+func findSocketByID(tcp *tcp_layer.Tcp, socketID int) *tcp_layer.Socket {
+	sockets := tcp.GetSockets()
+	for _, socket := range sockets {
+		if socket.ID == socketID {
+			return socket
+		}
+	}
+	return nil
 }

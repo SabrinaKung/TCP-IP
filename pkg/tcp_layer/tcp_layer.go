@@ -67,6 +67,8 @@ func (t *Tcp) Listen(port uint16) (*Socket, error) {
 		return nil, fmt.Errorf("port %d already in use", port)
 	}
 
+	isn := tcpUtils.GenerateInitialSeqNum()
+
 	socket := &Socket{
 		ID:         t.getNextSocketID(),
 		LocalAddr:  netip.IPv4Unspecified(), // Use 0.0.0.0
@@ -75,6 +77,9 @@ func (t *Tcp) Listen(port uint16) (*Socket, error) {
 		RemotePort: 0,
 		State:      LISTEN,
 		AcceptChan: make(chan *Socket),
+		sendBuffer: NewSendBuffer(isn),
+		recvBuffer: NewReceiveBuffer(0),
+		sendPacket: t.SendTCPPacket,
 	}
 
 	t.listenSockets[port] = socket
@@ -88,6 +93,8 @@ func (t *Tcp) Connect(addr netip.Addr, port uint16) (*Connection, error) {
 	// fmt.Printf("Creating new connection socket: LocalPort:%d -> %s:%d\n",
 	// 	localPort, addr, port)
 
+	isn := tcpUtils.GenerateInitialSeqNum()
+
 	socket := &Socket{
 		ID:         t.getNextSocketID(),
 		RemoteAddr: addr,
@@ -95,8 +102,9 @@ func (t *Tcp) Connect(addr netip.Addr, port uint16) (*Connection, error) {
 		LocalPort:  localPort,
 		LocalAddr:  t.localIp,
 		State:      SYN_SENT,
-		SeqNum:     tcpUtils.GenerateInitialSeqNum(),
-		AckNum:     0,
+		sendBuffer: NewSendBuffer(isn),
+		recvBuffer: NewReceiveBuffer(0),
+		sendPacket: t.SendTCPPacket,
 	}
 
 	// Create connection ID
@@ -206,25 +214,28 @@ func (t *Tcp) HandleTCPPacket(packet *common.IpPacket, networkApi common.Network
 				RemoteAddr: packet.Header.Src,
 				RemotePort: uint16(tcpHeader.SourcePort()),
 				State:      SYN_RECEIVED,
-				SeqNum:     tcpUtils.GenerateInitialSeqNum(),
-				AckNum:     uint32(tcpHeader.SequenceNumber()) + 1,
+				sendPacket: t.SendTCPPacket,
 			}
 
-			// Create connection ID for new socket
+			// Initialize send buffer with a new ISN
+			isn := tcpUtils.GenerateInitialSeqNum()
+			newSocket.sendBuffer = NewSendBuffer(isn)
+
+			// Initialize receive buffer with next expected sequence number
+			remoteSeq := uint32(tcpHeader.SequenceNumber())
+			newSocket.recvBuffer = NewReceiveBuffer(remoteSeq + 1)
+
+			// Create connection ID and add to active sockets
 			connID := ConnectionID{
 				LocalAddr:  newSocket.LocalAddr,
 				LocalPort:  newSocket.LocalPort,
 				RemoteAddr: newSocket.RemoteAddr,
 				RemotePort: newSocket.RemotePort,
 			}
-
-			// Add to active sockets map
-			t.socketMutex.Lock()
 			t.activeSockets[connID] = newSocket
-			t.socketMutex.Unlock()
 
 			// Send SYN-ACK
-			err := t.SendTCPPacket(
+			err := newSocket.sendPacket(
 				newSocket.LocalAddr,
 				newSocket.LocalPort,
 				newSocket.RemoteAddr,
@@ -240,9 +251,17 @@ func (t *Tcp) HandleTCPPacket(packet *common.IpPacket, networkApi common.Network
 
 	case SYN_SENT:
 		if tcpHeader.Flags() == (header.TCPFlagSyn | header.TCPFlagAck) {
-			socket.AckNum = uint32(tcpHeader.SequenceNumber()) + 1
+			// Get remote's seq from the SYN-ACK packet
+			remoteSeq := uint32(tcpHeader.SequenceNumber())
 
-			err := t.SendTCPPacket(
+			// Update receive buffer's next expected sequence number
+			socket.recvBuffer.rcvNxt = remoteSeq + 1
+
+			// Update send sequence number - only increment once for SYN
+			socket.sendBuffer.sndNxt = socket.sendBuffer.sndUna + 1
+			socket.sendBuffer.sndUna = socket.sendBuffer.sndNxt
+
+			err := socket.sendPacket(
 				socket.LocalAddr,
 				socket.LocalPort,
 				socket.RemoteAddr,
@@ -265,6 +284,44 @@ func (t *Tcp) HandleTCPPacket(packet *common.IpPacket, networkApi common.Network
 
 			if socket.AcceptChan != nil {
 				socket.AcceptChan <- socket
+			}
+		}
+
+	case ESTABLISHED:
+		if len(packet.Message) > header.TCPMinimumSize {
+			// We already have the TCP header from earlier parsing
+			// The TCP payload starts after the TCP header
+			tcpPayload := packet.Message[header.TCPMinimumSize:]
+
+			if len(tcpPayload) > 0 {
+				rcvSeqNum := uint32(tcpHeader.SequenceNumber())
+
+				fmt.Printf("Received data packet - Payload length: %d, SeqNum: %d\n",
+					len(tcpPayload), rcvSeqNum)
+
+				segment := &Segment{
+					Data:   tcpPayload,
+					SeqNum: rcvSeqNum,
+					Length: len(tcpPayload),
+				}
+
+				err := socket.recvBuffer.ProcessSegment(segment)
+				if err != nil {
+					return fmt.Errorf("failed to process data: %v", err)
+				}
+
+				// Send ACK for received data
+				err = socket.sendPacket(
+					socket.LocalAddr,
+					socket.LocalPort,
+					socket.RemoteAddr,
+					socket.RemotePort,
+					[]byte{},
+					header.TCPFlagAck,
+				)
+				if err != nil {
+					return fmt.Errorf("failed to send ACK: %v", err)
+				}
 			}
 		}
 	}
@@ -297,13 +354,20 @@ func (t *Tcp) SendTCPPacket(sourceIp netip.Addr, sourcePort uint16,
 	tcpHdr := header.TCPFields{
 		SrcPort:       sourcePort,
 		DstPort:       destPort,
-		SeqNum:        socket.SeqNum,
-		AckNum:        socket.AckNum,
-		DataOffset:    20, // Standard TCP header size
+		SeqNum:        socket.sendBuffer.sndNxt,
+		AckNum:        socket.recvBuffer.rcvNxt,
+		DataOffset:    20,
 		Flags:         tcpFlag,
 		WindowSize:    65535,
 		Checksum:      0,
 		UrgentPointer: 0,
+	}
+
+	// Only increment sequence number after constructing header
+	if tcpFlag&header.TCPFlagSyn != 0 {
+		socket.sendBuffer.sndNxt++ // SYN consumes one sequence number
+	} else if len(payload) > 0 {
+		socket.sendBuffer.sndNxt += uint32(len(payload))
 	}
 
 	// Compute checksum
@@ -325,16 +389,6 @@ func (t *Tcp) SendTCPPacket(sourceIp netip.Addr, sourcePort uint16,
 		return fmt.Errorf("failed to send TCP packet: %v", err)
 	}
 
-	// Update sequence number after sending
-	if len(payload) > 0 {
-		socket.SeqNum += uint32(len(payload))
-	}
-	if tcpFlag&header.TCPFlagSyn != 0 {
-		socket.SeqNum++ // SYN counts as one byte
-	}
-	if tcpFlag&header.TCPFlagFin != 0 {
-		socket.SeqNum++ // FIN counts as one byte
-	}
 	// print("finish SendTCPPacket\n")
 	return nil
 }
@@ -414,4 +468,18 @@ func (t *Tcp) GetSockets() []*Socket {
 	}
 
 	return sockets
+}
+
+type SendPacketFunc func(sourceIp netip.Addr, sourcePort uint16,
+	destIp netip.Addr, destPort uint16,
+	payload []byte, tcpFlag uint8) error
+
+func (sb *SendBuffer) HandleAck(ackNum uint32) {
+	sb.mutex.Lock()
+	defer sb.mutex.Unlock()
+
+	// Only update if this ACK advances the window
+	if ackNum > sb.sndUna {
+		sb.sndUna = ackNum
+	}
 }
