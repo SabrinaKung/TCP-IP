@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"net/netip"
 	"sync"
+	"time"
 
-	"github.com/google/netstack/tcpip/header"
 )
 
 type TCPState int
@@ -55,8 +55,6 @@ type Socket struct {
 	sendBuffer *SendBuffer
 	recvBuffer *ReceiveBuffer
 
-	// Function to send packets
-	sendPacket SendPacketFunc
 }
 
 func (s *Socket) VWrite(data []byte) (int, error) {
@@ -80,19 +78,6 @@ func (s *Socket) VWrite(data []byte) (int, error) {
 	// Add to unacked segments before sending
 	s.sendBuffer.unackedSegments = append(s.sendBuffer.unackedSegments, segment)
 
-	// Try to send immediately
-	err = s.sendPacket(
-		s.LocalAddr,
-		s.LocalPort,
-		s.RemoteAddr,
-		s.RemotePort,
-		data,
-		header.TCPFlagAck, // Just ACK flag for data
-	)
-	if err != nil {
-		return 0, fmt.Errorf("failed to send: %v", err)
-	}
-
 	return n, nil
 }
 
@@ -108,4 +93,23 @@ func (s *Socket) VRead(n int) ([]byte, error) {
 	}
 
 	return data, nil
+}
+
+
+
+func (s *Socket) startZeroWndProbing() {
+	// zero window probing
+	for {
+		s.sendBuffer.condSndWnd.L.Lock() 
+		for s.sendBuffer.sndWnd != 0 { // if send window is not empty, then wait
+			s.sendBuffer.condSndWnd.Wait()
+		}
+
+		// send 1 segment packet
+
+		s.sendBuffer.condSndWnd.L.Unlock() 
+		time.Sleep(time.Second)
+
+	}
+
 }
