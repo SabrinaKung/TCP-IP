@@ -5,7 +5,6 @@ import (
 	"net/netip"
 	"sync"
 	"time"
-
 )
 
 type TCPState int
@@ -54,7 +53,6 @@ type Socket struct {
 	// Buffer management
 	sendBuffer *SendBuffer
 	recvBuffer *ReceiveBuffer
-
 }
 
 func (s *Socket) VWrite(data []byte) (int, error) {
@@ -95,21 +93,18 @@ func (s *Socket) VRead(n int) ([]byte, error) {
 	return data, nil
 }
 
-
-
 func (s *Socket) startZeroWndProbing() {
 	// zero window probing
 	for {
-		s.sendBuffer.condSndWnd.L.Lock() 
+		s.sendBuffer.condSndWnd.L.Lock()
 		for s.sendBuffer.sndWnd != 0 { // if send window is not empty, then wait
 			s.sendBuffer.condSndWnd.Wait()
 		}
 
 		// send 1 segment packet
 
-		s.sendBuffer.condSndWnd.L.Unlock() 
+		s.sendBuffer.condSndWnd.L.Unlock()
 		time.Sleep(time.Second)
 
 	}
-
 }

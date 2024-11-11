@@ -297,15 +297,16 @@ func handleSend(args []string, tcp *tcp_layer.Tcp) {
 		return
 	}
 
-	// Send the data
+	// Send the data from application
 	data := []byte(args[1])
-	n, err := socket.VWrite(data)
+	// n, err := socket.VWrite(data)
+	_, err = socket.VWrite(data)
 	if err != nil {
 		fmt.Printf("Send error: %v\n", err)
 		return
 	}
 
-	fmt.Printf("Sent %d bytes\n", n)
+	// fmt.Printf("VWrite %d bytes\n", n)
 }
 
 func handleReceive(args []string, tcp *tcp_layer.Tcp) {

@@ -185,13 +185,29 @@ func (s *Socket) Accept() (*Socket, error) {
 // }
 
 func (t *Tcp) HandleTCPPacket(packet *common.IpPacket, networkApi common.NetworkLayerAPI) error {
-	tcpHeader := header.TCP(packet.Message[:header.TCPMinimumSize])
-	// fmt.Printf("Received TCP packet with flags: %d from %s:%d\n",
-	// 	tcpHeader.Flags(),
-	// 	packet.Header.Src,
-	// 	tcpHeader.SourcePort())
+	tcpHdr := tcpUtils.ParseTCPHeader(packet.Message[:header.TCPMinimumSize])
 
-	socket := t.findSocket(tcpHeader, packet)
+	// fmt.Printf("Received TCP packet with flags: %d from %s:%d\n",
+	// 	tcpHdr.Flags,
+	// 	packet.Header.Src,
+	// 	tcpHdr.SrcPort)
+
+	tcpChecksumFromHeader := tcpHdr.Checksum // Save original
+	tcpHdr.Checksum = 0
+	tcpPayload := packet.Message[header.TCPMinimumSize:]
+	tcpComputedChecksum := tcpUtils.ComputeTCPChecksum(&tcpHdr, packet.Header.Src, packet.Header.Dst, tcpPayload)
+
+	// var tcpChecksumState string
+	if tcpComputedChecksum == tcpChecksumFromHeader {
+		// tcpChecksumState = "OK"
+	} else {
+		// tcpChecksumState = "FAIL"
+		return fmt.Errorf("invalid tcp checksum")
+	}
+	// fmt.Printf("Received TCP packet with IP Header:  %v\nTCP header:  %+v\nFlags:  %s\nTCP Checksum:  %s\nPayload (%d bytes):  %s\n",
+	// packet.Header, tcpHdr, tcpUtils.TCPFlagsAsString(tcpHdr.Flags), tcpChecksumState, len(tcpPayload), string(tcpPayload))
+
+	socket := t.findSocket(tcpHdr, packet)
 	if socket == nil {
 		return fmt.Errorf("no socket found for packet")
 	}
@@ -203,14 +219,14 @@ func (t *Tcp) HandleTCPPacket(packet *common.IpPacket, networkApi common.Network
 
 	switch socket.State {
 	case LISTEN:
-		if tcpHeader.Flags() == header.TCPFlagSyn {
+		if tcpHdr.Flags == header.TCPFlagSyn {
 			// Create new connection socket
 			newSocket := &Socket{
 				ID:         t.getNextSocketID(),
 				LocalAddr:  t.localIp,
 				LocalPort:  socket.LocalPort,
 				RemoteAddr: packet.Header.Src,
-				RemotePort: uint16(tcpHeader.SourcePort()),
+				RemotePort: uint16(tcpHdr.SrcPort),
 				State:      SYN_RECEIVED,
 			}
 
@@ -219,7 +235,7 @@ func (t *Tcp) HandleTCPPacket(packet *common.IpPacket, networkApi common.Network
 			newSocket.sendBuffer = NewSendBuffer(isn)
 
 			// Initialize receive buffer with next expected sequence number
-			remoteSeq := uint32(tcpHeader.SequenceNumber())
+			remoteSeq := uint32(tcpHdr.SeqNum)
 			newSocket.recvBuffer = NewReceiveBuffer(remoteSeq + 1)
 
 			// Create connection ID and add to active sockets
@@ -247,9 +263,9 @@ func (t *Tcp) HandleTCPPacket(packet *common.IpPacket, networkApi common.Network
 		}
 
 	case SYN_SENT:
-		if tcpHeader.Flags() == (header.TCPFlagSyn | header.TCPFlagAck) {
+		if tcpHdr.Flags == (header.TCPFlagSyn | header.TCPFlagAck) {
 			// Get remote's seq from the SYN-ACK packet
-			remoteSeq := uint32(tcpHeader.SequenceNumber())
+			remoteSeq := uint32(tcpHdr.SeqNum)
 
 			// Update receive buffer's next expected sequence number
 			socket.recvBuffer.rcvNxt = remoteSeq + 1
@@ -258,7 +274,7 @@ func (t *Tcp) HandleTCPPacket(packet *common.IpPacket, networkApi common.Network
 			socket.sendBuffer.sndNxt += 1
 			socket.sendBuffer.sndUna = socket.sendBuffer.sndNxt
 			socket.sendBuffer.sndLbw = socket.sendBuffer.sndNxt
-			
+
 			err := t.SendTCPPacket(
 				socket.LocalAddr,
 				socket.LocalPort,
@@ -275,7 +291,7 @@ func (t *Tcp) HandleTCPPacket(packet *common.IpPacket, networkApi common.Network
 		}
 
 	case SYN_RECEIVED:
-		if tcpHeader.Flags() == header.TCPFlagAck {
+		if tcpHdr.Flags == header.TCPFlagAck {
 			socket.sendBuffer.sndNxt += 1
 			socket.sendBuffer.sndUna = socket.sendBuffer.sndNxt
 			socket.sendBuffer.sndLbw = socket.sendBuffer.sndNxt
@@ -290,42 +306,41 @@ func (t *Tcp) HandleTCPPacket(packet *common.IpPacket, networkApi common.Network
 		}
 
 	case ESTABLISHED:
-		if len(packet.Message) > header.TCPMinimumSize {
-			// We already have the TCP header from earlier parsing
-			// The TCP payload starts after the TCP header
-			tcpPayload := packet.Message[header.TCPMinimumSize:]
+		// The TCP payload starts after the TCP header
+		tcpPayload := packet.Message[header.TCPMinimumSize:]
 
-			if len(tcpPayload) > 0 {
-				rcvSeqNum := uint32(tcpHeader.SequenceNumber())
-				fmt.Printf("Received data packet - Payload length: %d, SeqNum: %d\n",
-					len(tcpPayload), rcvSeqNum)
+		socket.sendBuffer.UpdateWindowSize(tcpHdr.WindowSize)
+		socket.sendBuffer.Acknowledge(tcpHdr.AckNum)
+		// fmt.Printf("socket.sendBuffer.sndUna: %d\n", socket.sendBuffer.sndUna)
 
-				// deal with send window size
-				socket.sendBuffer.UpdateWindowSize(tcpHeader.WindowSize())
-				socket.sendBuffer.Acknowledge(tcpHeader.AckNumber())
-				segment := &Segment{
-					Data:   tcpPayload,
-					SeqNum: rcvSeqNum,
-					Length: len(tcpPayload),
-				}
+		// Deal with tcp packet with payload
+		if len(tcpPayload) > 0 {
+			rcvSeqNum := uint32(tcpHdr.SeqNum)
+			// fmt.Printf("Received data packet - Payload length: %d, SeqNum: %d\n",
+			// len(tcpPayload), rcvSeqNum)
 
-				err := socket.recvBuffer.ProcessSegment(segment)
-				if err != nil { // if buffer is full, drop the packet
-					return fmt.Errorf("failed to process data: %v", err)
-				}
+			segment := &Segment{
+				Data:   tcpPayload,
+				SeqNum: rcvSeqNum,
+				Length: len(tcpPayload),
+			}
 
-				// Send ACK for received data
-				err = t.SendTCPPacket(
-					socket.LocalAddr,
-					socket.LocalPort,
-					socket.RemoteAddr,
-					socket.RemotePort,
-					[]byte{},
-					header.TCPFlagAck,
-				)
-				if err != nil {
-					return fmt.Errorf("failed to send ACK: %v", err)
-				}
+			err := socket.recvBuffer.ProcessSegment(segment)
+			if err != nil { // if buffer is full, drop the packet
+				return fmt.Errorf("failed to process data: %v", err)
+			}
+
+			// Send ACK for received data
+			err = t.SendTCPPacket(
+				socket.LocalAddr,
+				socket.LocalPort,
+				socket.RemoteAddr,
+				socket.RemotePort,
+				[]byte{},
+				header.TCPFlagAck,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to send ACK: %v", err)
 			}
 		}
 	}
@@ -367,24 +382,17 @@ func (t *Tcp) SendTCPPacket(sourceIp netip.Addr, sourcePort uint16,
 		UrgentPointer: 0,
 	}
 
-	// // Only increment sequence number after constructing header
-	// if tcpFlag&header.TCPFlagSyn != 0 {
-	// 	socket.sendBuffer.sndNxt++ // SYN consumes one sequence number
-	// 	socket.sendBuffer.sndLbw = socket.sendBuffer.sndNxt
-	// 	socket.sendBuffer.sndUna = socket.sendBuffer.sndNxt
-	// }
-
 	// Compute checksum
 	checksum := tcpUtils.ComputeTCPChecksum(&tcpHdr, sourceIp, destIp, payload)
 	tcpHdr.Checksum = checksum
 
 	// Serialize the TCP header
-	tcpHeaderBytes := make(header.TCP, tcpUtils.TcpHeaderLen)
-	tcpHeaderBytes.Encode(&tcpHdr)
+	tcpHdrBytes := make(header.TCP, tcpUtils.TcpHeaderLen)
+	tcpHdrBytes.Encode(&tcpHdr)
 
 	// Combine header and payload
-	ipPacketPayload := make([]byte, 0, len(tcpHeaderBytes)+len(payload))
-	ipPacketPayload = append(ipPacketPayload, tcpHeaderBytes...)
+	ipPacketPayload := make([]byte, 0, len(tcpHdrBytes)+len(payload))
+	ipPacketPayload = append(ipPacketPayload, tcpHdrBytes...)
 	ipPacketPayload = append(ipPacketPayload, payload...)
 
 	// Send via network layer
@@ -397,9 +405,9 @@ func (t *Tcp) SendTCPPacket(sourceIp netip.Addr, sourcePort uint16,
 	return nil
 }
 
-func (t *Tcp) findSocket(tcpHeader header.TCP, packet *common.IpPacket) *Socket {
-	srcPort := uint16(tcpHeader.SourcePort())
-	dstPort := uint16(tcpHeader.DestinationPort())
+func (t *Tcp) findSocket(tcpHeader header.TCPFields, packet *common.IpPacket) *Socket {
+	srcPort := uint16(tcpHeader.SrcPort)
+	dstPort := uint16(tcpHeader.DstPort)
 
 	// First check active connections
 	connID := ConnectionID{
@@ -425,7 +433,7 @@ func (t *Tcp) findSocket(tcpHeader header.TCP, packet *common.IpPacket) *Socket 
 	}
 
 	// If not found and it's a SYN packet, check listening sockets
-	if tcpHeader.Flags() == header.TCPFlagSyn {
+	if tcpHeader.Flags == header.TCPFlagSyn {
 		if socket, exists := t.listenSockets[dstPort]; exists {
 			// fmt.Printf("Found listening socket: ID %d\n", socket.ID)
 			return socket
@@ -474,27 +482,32 @@ func (t *Tcp) GetSockets() []*Socket {
 	return sockets
 }
 
-func (t *Tcp) StartSocketSending(s *Socket)  {
+func (t *Tcp) StartSocketSending(s *Socket) {
 	go func() {
-		// go s.startZeroWndProbing()
+		go s.startZeroWndProbing()
 		for {
-			s.sendBuffer.condEmpty.L.Lock() 
-			for s.sendBuffer.AvailableData() == 0 { // if there is no data to be sent, then wait 
-				s.sendBuffer.condEmpty.Wait() // wait on notifacation
+			// 1. Wait for data to be available
+			s.sendBuffer.condEmpty.L.Lock()
+			for s.sendBuffer.AvailableData() == 0 { // if there is no data to be sent, then wait
+				s.sendBuffer.condEmpty.Wait() // wait on notification
 			}
+
+			// 2. Wait for send window to be non-zero
 			s.sendBuffer.condSndWnd.L.Lock()
 			for s.sendBuffer.sndWnd == 0 { // if send window is empty, then wait
 				s.sendBuffer.condSndWnd.Wait()
 			}
-			segment, err := s.sendBuffer.ReadSegment(uint32(min(common.MaxTcpPayload, int(s.sendBuffer.sndWnd)))) 
-			
+
+			// Read segment from buffer
+			segment, err := s.sendBuffer.ReadSegment(uint32(min(common.MaxTcpPayload, int(s.sendBuffer.sndWnd))))
 			if err != nil {
 				fmt.Println("Error reading segment from send buffer:", err)
 				s.sendBuffer.condEmpty.L.Unlock()
 				s.sendBuffer.condSndWnd.L.Unlock()
 				return
 			}
-			// Add to unacked segments before sending
+
+			// Track unacknowledged segment
 			s.sendBuffer.unackedSegments = append(s.sendBuffer.unackedSegments, segment)
 			err = t.SendTCPPacket(
 				s.LocalAddr,
@@ -503,7 +516,7 @@ func (t *Tcp) StartSocketSending(s *Socket)  {
 				s.RemotePort,
 				segment.Data,
 				header.TCPFlagAck, // Just ACK flag for data
-			)	
+			)
 
 			s.sendBuffer.condEmpty.L.Unlock()
 			s.sendBuffer.condSndWnd.L.Unlock()
@@ -511,6 +524,7 @@ func (t *Tcp) StartSocketSending(s *Socket)  {
 				fmt.Println("Error sending packet:", err)
 				return
 			}
+			fmt.Printf("Sent %d bytes\n", len(segment.Data))
 		}
 	}()
 }

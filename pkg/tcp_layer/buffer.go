@@ -7,68 +7,8 @@ import (
 )
 
 const (
-	DefaultBufferSize = 65535
+	DefaultBufferSize = 10
 )
-
-// // Circular buffer
-// type RingBuffer struct {
-// 	data     []byte
-// 	start    int // Start of valid data
-// 	end      int // End of valid data
-// 	size     int // Current amount of data
-// 	capacity int
-// 	mutex    sync.Mutex
-// }
-
-// func NewRingBuffer(capacity int) *RingBuffer {
-// 	return &RingBuffer{
-// 		data:     make([]byte, capacity),
-// 		capacity: capacity,
-// 	}
-// }
-
-// func (rb *RingBuffer) Write(data []byte) (int, error) {
-// 	rb.mutex.Lock()
-// 	defer rb.mutex.Unlock()
-
-// 	if len(data) > rb.available() {
-// 		return 0, fmt.Errorf("buffer full")
-// 	}
-
-// 	written := 0
-// 	for _, b := range data {
-// 		rb.data[rb.end] = b
-// 		rb.end = (rb.end + 1) % rb.capacity
-// 		written++
-// 		rb.size++
-// 	}
-// 	return written, nil
-// }
-
-// func (rb *RingBuffer) Read(n int) ([]byte, error) {
-// 	rb.mutex.Lock()
-// 	defer rb.mutex.Unlock()
-
-// 	if rb.size == 0 {
-// 		return nil, fmt.Errorf("buffer empty")
-// 	}
-
-// 	if n > rb.size {
-// 		n = rb.size
-// 	}
-
-// 	result := make([]byte, n)
-// 	for i := 0; i < n; i++ {
-// 		result[i] = rb.data[rb.start]
-// 		rb.start = (rb.start + 1) % rb.capacity
-// 		rb.size--
-// 	}
-// 	return result, nil
-// }
-
-// func (rb *RingBuffer) available() int {
-// 	return rb.capacity - rb.size
-// }
 
 // Segment represents a TCP segment with metadata
 type Segment struct {
@@ -85,11 +25,11 @@ type SendBuffer struct {
 	sndUna          uint32 // oldest unacked sequence number
 	sndNxt          uint32 // next sequence number to send
 	sndWnd          uint16 // send window size
-	sndLbw 			uint32 // last byte written by application
+	sndLbw          uint32 // last byte written by application
 	initialSeqNum   uint32
 	unackedSegments []*Segment
 	mutex           sync.Mutex
-	condEmpty       *sync.Cond 
+	condEmpty       *sync.Cond
 	condSndWnd      *sync.Cond
 }
 
@@ -99,7 +39,7 @@ func NewSendBuffer(isn uint32) *SendBuffer {
 		sndUna:          isn,
 		sndNxt:          isn,
 		sndWnd:          DefaultBufferSize,
-		sndLbw: 		 isn,
+		sndLbw:          isn,
 		initialSeqNum:   isn,
 		unackedSegments: make([]*Segment, 0),
 	}
@@ -109,16 +49,6 @@ func NewSendBuffer(isn uint32) *SendBuffer {
 	sb.condSndWnd = sync.NewCond(mutexSndWnd)
 	return sb
 }
-// func NewSendBuffer(size uint32, initialSeq uint32) *SendBuffer {
-// 	buf := &SendBuffer{
-// 		buffer:         make([]byte, size),
-// 		initialSeqNum:  initialSeq,
-// 		unackedSegments: make([]*Segment, 0),
-// 	}
-// 	buf.condEmpty = sync.NewCond(&buf.mutex)
-// 	buf.condSndWnd = sync.NewCond(&buf.mutex)
-// 	return buf
-// }
 
 func (sb *SendBuffer) Write(data []byte) (int, error) {
 	sb.mutex.Lock()
@@ -129,9 +59,10 @@ func (sb *SendBuffer) Write(data []byte) (int, error) {
 		return 0, fmt.Errorf("send buffer is full")
 	}
 
+	// Write data from application to send buffer
 	writeLen := uint32(len(data))
 	if writeLen > available {
-		writeLen = available 
+		writeLen = available
 	}
 	start := sb.sndLbw % uint32(len(sb.buffer))
 	end := (start + writeLen) % uint32(len(sb.buffer))
@@ -145,12 +76,10 @@ func (sb *SendBuffer) Write(data []byte) (int, error) {
 
 	sb.sndLbw += writeLen
 
-	// may exist problem
-	sb.condEmpty.Signal() 
+	sb.condEmpty.Signal()
 
 	return int(writeLen), nil
 }
-
 
 func (sb *SendBuffer) ReadSegment(segmentSize uint32) (*Segment, error) {
 	sb.mutex.Lock()
@@ -178,7 +107,7 @@ func (sb *SendBuffer) ReadSegment(segmentSize uint32) (*Segment, error) {
 	segment := &Segment{
 		Data:      data,
 		SeqNum:    sb.sndNxt - segmentSize,
-		Timestamp: time.Now().UnixNano(), 
+		Timestamp: time.Now().UnixNano(),
 		Acked:     false,
 		Length:    len(data),
 	}
@@ -186,17 +115,17 @@ func (sb *SendBuffer) ReadSegment(segmentSize uint32) (*Segment, error) {
 	return segment, nil
 }
 
-
 func (sb *SendBuffer) Acknowledge(ackNum uint32) {
 	sb.mutex.Lock()
 	defer sb.mutex.Unlock()
 
 	if ackNum > sb.sndUna && ackNum <= sb.sndLbw {
-		sb.sndUna = ackNum 
+		sb.sndUna = ackNum
 	}
 }
 
 func (sb *SendBuffer) AvailableSpace() uint32 {
+	// fmt.Println("sb.sndUna: ", sb.sndUna)
 	used := sb.sndLbw - sb.sndUna
 	return uint32(len(sb.buffer)) - used
 }
@@ -236,21 +165,31 @@ func (rb *ReceiveBuffer) ProcessSegment(segment *Segment) error {
 	rb.mutex.Lock()
 	defer rb.mutex.Unlock()
 
-	if len(rb.buffer)+len(segment.Data) > int(rb.rcvWnd) {
-		fmt.Printf("Segment too large for receive window, SeqNum: %d, Length: %d\n",
-			segment.SeqNum, segment.Length)
-		return fmt.Errorf("segment too large for receive window")
+	availableWindow := int(rb.rcvWnd)
+	if availableWindow <= 0 {
+		fmt.Printf("Receive window is full, cannot accept any more data\n")
+		return fmt.Errorf("receive window full")
 	}
+
+	// If segment data is larger than available window, only accept up to available window
+	// Might not need this section
+	dataToAccept := segment.Data
+	if len(dataToAccept) > availableWindow {
+		fmt.Printf("Segment too large, accepting partial data up to receive window limit, SeqNum: %d, Length: %d\n",
+			segment.SeqNum, availableWindow)
+		dataToAccept = dataToAccept[:availableWindow]
+	}
+
 	// Check if this is the next expected segment
 	if segment.SeqNum == rb.rcvNxt {
 		fmt.Printf("Processing in-order segment, SeqNum: %d, Length: %d\n",
-			segment.SeqNum, segment.Length)
+			segment.SeqNum, len(dataToAccept))
 
-		// Add to buffer
-		rb.buffer = append(rb.buffer, segment.Data...)
+		// Add accepted data to buffer
+		rb.buffer = append(rb.buffer, dataToAccept...)
 		// Update next expected sequence number
-		rb.rcvNxt += uint32(segment.Length)
-		rb.rcvWnd -= uint16(segment.Length)
+		rb.rcvNxt += uint32(len(dataToAccept))
+		rb.rcvWnd -= uint16(len(dataToAccept))
 
 		// Process any buffered segments that are now in order
 		rb.processBufferedSegments()
@@ -277,7 +216,7 @@ func (rb *ReceiveBuffer) Read(n int) ([]byte, error) {
 	}
 	readLen := n
 	if len(rb.buffer) < n {
-		readLen = len(rb.buffer) 
+		readLen = len(rb.buffer)
 	}
 	data := rb.buffer[:readLen]
 	rb.buffer = rb.buffer[readLen:]
@@ -285,7 +224,6 @@ func (rb *ReceiveBuffer) Read(n int) ([]byte, error) {
 
 	return data, nil
 }
-
 
 func (rb *ReceiveBuffer) bufferSegment(segment *Segment) {
 	// Insert segment in order
@@ -304,6 +242,7 @@ func (rb *ReceiveBuffer) bufferSegment(segment *Segment) {
 
 func (rb *ReceiveBuffer) processBufferedSegments() {
 	for len(rb.oooSegments) > 0 {
+		fmt.Printf("processBufferedSegments in oooSegments\n")
 		segment := rb.oooSegments[0]
 		if segment.SeqNum != rb.rcvNxt {
 			break

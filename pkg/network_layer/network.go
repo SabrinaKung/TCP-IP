@@ -209,7 +209,7 @@ func (n *NetworkLayer) ReceiveIpPacket(packet *common.IpPacket, thisHopIp netip.
 		return err
 	}
 	if result != uint16(packet.Header.Checksum) {
-		log.Println("invalid checksum")
+		log.Println("invalid ip checksum")
 		return nil
 	}
 
