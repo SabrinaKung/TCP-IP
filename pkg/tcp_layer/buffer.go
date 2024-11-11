@@ -59,11 +59,13 @@ func (sb *SendBuffer) Write(data []byte) (int, error) {
 		return 0, fmt.Errorf("send buffer is full")
 	}
 
-	// Write data from application to send buffer
 	writeLen := uint32(len(data))
 	if writeLen > available {
+		fmt.Printf("Discard %d bytes.\n", writeLen-available)
 		writeLen = available
 	}
+	fmt.Printf("%d bytes have been written to buffer!\n", writeLen)
+
 	start := sb.sndLbw % uint32(len(sb.buffer))
 	end := (start + writeLen) % uint32(len(sb.buffer))
 
@@ -75,8 +77,7 @@ func (sb *SendBuffer) Write(data []byte) (int, error) {
 	}
 
 	sb.sndLbw += writeLen
-
-	sb.condEmpty.Signal()
+	sb.condEmpty.Signal() // Signal that data is available
 
 	return int(writeLen), nil
 }

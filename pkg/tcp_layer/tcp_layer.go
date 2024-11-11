@@ -483,48 +483,126 @@ func (t *Tcp) GetSockets() []*Socket {
 }
 
 func (t *Tcp) StartSocketSending(s *Socket) {
-	go func() {
-		go s.startZeroWndProbing()
-		for {
-			// 1. Wait for data to be available
-			s.sendBuffer.condEmpty.L.Lock()
-			for s.sendBuffer.AvailableData() == 0 { // if there is no data to be sent, then wait
-				s.sendBuffer.condEmpty.Wait() // wait on notification
+	go t.handleSending(s)        // Handle normal sending
+	go t.handleZeroWndProbing(s) // Handle zero window probing
+}
+
+func (t *Tcp) handleZeroWndProbing(s *Socket) {
+	probeInterval := InitialProbeTimeout
+	probeCount := 0
+
+	for {
+		s.sendBuffer.condSndWnd.L.Lock()
+		for s.sendBuffer.sndWnd != 0 { // Wait until window becomes zero
+			s.sendBuffer.condSndWnd.Wait()
+		}
+		s.sendBuffer.condSndWnd.L.Unlock()
+
+		// Start probing cycle
+		for s.State == ESTABLISHED {
+			// Send a probe
+			if len(s.sendBuffer.unackedSegments) == 0 {
+				// If no unacked segments, send 1-byte probe
+				err := t.SendTCPPacket(
+					s.LocalAddr,
+					s.LocalPort,
+					s.RemoteAddr,
+					s.RemotePort,
+					[]byte{0},
+					header.TCPFlagAck,
+				)
+				if err != nil {
+					fmt.Printf("Failed to send zero window probe: %v\n", err)
+					continue
+				}
+			} else {
+				// Retransmit first byte of first unacked segment
+				lastUnacked := s.sendBuffer.unackedSegments[0]
+				err := t.SendTCPPacket(
+					s.LocalAddr,
+					s.LocalPort,
+					s.RemoteAddr,
+					s.RemotePort,
+					lastUnacked.Data[:1],
+					header.TCPFlagAck,
+				)
+				if err != nil {
+					fmt.Printf("Failed to send zero window probe: %v\n", err)
+					continue
+				}
 			}
 
-			// 2. Wait for send window to be non-zero
+			probeCount++
+			currentInterval := probeInterval
+			probeInterval = min(probeInterval*2, MaxProbeTimeout)
+
+			// Wait for the probe interval
+			time.Sleep(currentInterval)
+
+			// Check if window has opened
 			s.sendBuffer.condSndWnd.L.Lock()
-			for s.sendBuffer.sndWnd == 0 { // if send window is empty, then wait
-				s.sendBuffer.condSndWnd.Wait()
-			}
-
-			// Read segment from buffer
-			segment, err := s.sendBuffer.ReadSegment(uint32(min(common.MaxTcpPayload, int(s.sendBuffer.sndWnd))))
-			if err != nil {
-				fmt.Println("Error reading segment from send buffer:", err)
-				s.sendBuffer.condEmpty.L.Unlock()
+			if s.sendBuffer.sndWnd > 0 {
+				// Window has opened, reset probe parameters
+				probeInterval = InitialProbeTimeout
+				probeCount = 0
 				s.sendBuffer.condSndWnd.L.Unlock()
-				return
+				break
 			}
+			s.sendBuffer.condSndWnd.L.Unlock()
+		}
+	}
+}
 
-			// Track unacknowledged segment
-			s.sendBuffer.unackedSegments = append(s.sendBuffer.unackedSegments, segment)
-			err = t.SendTCPPacket(
-				s.LocalAddr,
-				s.LocalPort,
-				s.RemoteAddr,
-				s.RemotePort,
-				segment.Data,
-				header.TCPFlagAck, // Just ACK flag for data
-			)
+func (t *Tcp) handleSending(s *Socket) {
+	for {
+		// 1. Wait for data to be available
+		s.sendBuffer.condEmpty.L.Lock()
+		for s.sendBuffer.AvailableData() == 0 { // if there is no data to be sent, then wait
+			s.sendBuffer.condEmpty.Wait() // wait on notification
+		}
 
+		// 2. Wait for send window to be non-zero
+		s.sendBuffer.condSndWnd.L.Lock()
+		for s.sendBuffer.sndWnd == 0 { // if send window is empty, then wait
+			s.sendBuffer.condSndWnd.Wait()
+		}
+
+		// Only send up to the window size
+		windowSize := s.sendBuffer.sndWnd
+		segment, err := s.sendBuffer.ReadSegment(uint32(windowSize))
+
+		if err != nil {
+			fmt.Println("Error reading segment from send buffer:", err)
 			s.sendBuffer.condEmpty.L.Unlock()
 			s.sendBuffer.condSndWnd.L.Unlock()
-			if err != nil {
-				fmt.Println("Error sending packet:", err)
-				return
-			}
-			fmt.Printf("Sent %d bytes\n", len(segment.Data))
+			return
 		}
-	}()
+
+		// Track unacknowledged segment
+		s.sendBuffer.unackedSegments = append(s.sendBuffer.unackedSegments, segment)
+
+		err = t.SendTCPPacket(
+			s.LocalAddr,
+			s.LocalPort,
+			s.RemoteAddr,
+			s.RemotePort,
+			segment.Data,
+			header.TCPFlagAck,
+		)
+
+		// Release locks
+		s.sendBuffer.condEmpty.L.Unlock()
+		s.sendBuffer.condSndWnd.L.Unlock()
+
+		if err != nil {
+			fmt.Println("Error sending packet:", err)
+			return
+		}
+
+		fmt.Printf("Sent %d bytes\n", len(segment.Data))
+
+		// Wait for ACK before sending more data
+		// This ensures we respect flow control
+		time.Sleep(100 * time.Millisecond)
+	}
 }

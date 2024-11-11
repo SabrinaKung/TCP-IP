@@ -17,6 +17,11 @@ const (
 	ESTABLISHED
 )
 
+const (
+	InitialProbeTimeout = 1 * time.Second  // Initial probe timeout (RTO)
+	MaxProbeTimeout     = 60 * time.Second // Maximum probe timeout
+)
+
 func (s TCPState) String() string {
 	switch s {
 	case CLOSED:
@@ -91,20 +96,4 @@ func (s *Socket) VRead(n int) ([]byte, error) {
 	}
 
 	return data, nil
-}
-
-func (s *Socket) startZeroWndProbing() {
-	// zero window probing
-	for {
-		s.sendBuffer.condSndWnd.L.Lock()
-		for s.sendBuffer.sndWnd != 0 { // if send window is not empty, then wait
-			s.sendBuffer.condSndWnd.Wait()
-		}
-
-		// send 1 segment packet
-
-		s.sendBuffer.condSndWnd.L.Unlock()
-		time.Sleep(time.Second)
-
-	}
 }
