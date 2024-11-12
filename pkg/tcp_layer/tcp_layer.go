@@ -23,7 +23,7 @@ type Tcp struct {
 }
 
 type Connection struct {
-	socket *Socket // Use pointer to Socket
+	Socket *Socket // Use pointer to Socket
 }
 
 // ConnectionID uniquely identifies a TCP connection
@@ -143,7 +143,7 @@ func (t *Tcp) Connect(addr netip.Addr, port uint16) (*Connection, error) {
 			socket.stateMutex.Lock()
 			if socket.State == ESTABLISHED {
 				socket.stateMutex.Unlock()
-				return &Connection{socket: socket}, nil
+				return &Connection{Socket: socket}, nil
 			}
 			socket.stateMutex.Unlock()
 		case <-timeout:

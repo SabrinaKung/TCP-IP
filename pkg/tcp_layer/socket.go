@@ -71,16 +71,6 @@ func (s *Socket) VWrite(data []byte) (int, error) {
 		return 0, err
 	}
 
-	// Create segment
-	segment := &Segment{
-		Data:   data,
-		SeqNum: s.sendBuffer.sndNxt,
-		Length: len(data),
-	}
-
-	// Add to unacked segments before sending
-	s.sendBuffer.unackedSegments = append(s.sendBuffer.unackedSegments, segment)
-
 	return n, nil
 }
 
