@@ -89,6 +89,13 @@ func (sb *SendBuffer) ReadSegment(segmentSize uint32) (*Segment, error) {
 	for sb.sndNxt == sb.sndLbw {
 		sb.condEmpty.Wait()
 	}
+
+	// Don't read data that's already been acknowledged
+	if sb.sndNxt < sb.sndUna {
+		sb.sndNxt = sb.sndUna
+	}
+
+	// Start reading from sndNxt (which is now properly updated by ACKs)
 	availableData := sb.sndLbw - sb.sndNxt
 	if availableData < segmentSize {
 		segmentSize = availableData
@@ -99,20 +106,23 @@ func (sb *SendBuffer) ReadSegment(segmentSize uint32) (*Segment, error) {
 
 	var data []byte
 	if start < end {
-		data = sb.buffer[start:end]
+		data = make([]byte, end-start)
+		copy(data, sb.buffer[start:end])
 	} else {
-		data = append(sb.buffer[start:], sb.buffer[:end]...)
+		data = make([]byte, uint32(len(sb.buffer))-start+end)
+		copy(data[:uint32(len(sb.buffer))-start], sb.buffer[start:])
+		copy(data[uint32(len(sb.buffer))-start:], sb.buffer[:end])
 	}
-	sb.sndNxt += segmentSize
 
 	segment := &Segment{
 		Data:      data,
-		SeqNum:    sb.sndNxt - segmentSize,
+		SeqNum:    sb.sndNxt,
 		Timestamp: time.Now().UnixNano(),
 		Acked:     false,
 		Length:    len(data),
 	}
 
+	// Don't update sndNxt here - it will be updated after successful send
 	return segment, nil
 }
 
@@ -120,6 +130,7 @@ func (sb *SendBuffer) Acknowledge(ackNum uint32) {
 	sb.mutex.Lock()
 	defer sb.mutex.Unlock()
 
+	// fmt.Printf("Acknowledge: %d\n", ackNum)
 	if ackNum > sb.sndUna && ackNum <= sb.sndLbw {
 		sb.sndUna = ackNum
 	}

@@ -370,10 +370,11 @@ func (t *Tcp) SendTCPPacket(sourceIp netip.Addr, sourcePort uint16,
 			sourceIp, sourcePort, destIp, destPort)
 	}
 
+	// fmt.Printf("socket.sendBuffer.sndNxt: %d\n", socket.sendBuffer.sndNxt)
 	tcpHdr := header.TCPFields{
 		SrcPort:       sourcePort,
 		DstPort:       destPort,
-		SeqNum:        socket.sendBuffer.sndNxt - uint32(len(payload)),
+		SeqNum:        socket.sendBuffer.sndNxt,
 		AckNum:        socket.recvBuffer.rcvNxt,
 		DataOffset:    20,
 		Flags:         tcpFlag,
@@ -501,29 +502,18 @@ func (t *Tcp) handleZeroWndProbing(s *Socket) {
 		// Start probing cycle
 		for s.State == ESTABLISHED {
 			// Send a probe
-			if len(s.sendBuffer.unackedSegments) == 0 {
-				// If no unacked segments, send 1-byte probe
+			// fmt.Printf("Sending a probe s.sendBuffer.sndUna: %d  s.sendBuffer.sndNxt: %d, s.sendBuffer.sndLbw: %d\n", s.sendBuffer.sndUna, s.sendBuffer.sndNxt, s.sendBuffer.sndLbw)
+			if s.sendBuffer.sndNxt < s.sendBuffer.sndLbw {
+				fmt.Printf("Sending a probe with next un-acked byte\n")
+				probeIndex := s.sendBuffer.sndNxt % uint32(len(s.sendBuffer.buffer))
+				probe := []byte{s.sendBuffer.buffer[probeIndex]}
+
 				err := t.SendTCPPacket(
 					s.LocalAddr,
 					s.LocalPort,
 					s.RemoteAddr,
 					s.RemotePort,
-					[]byte{0},
-					header.TCPFlagAck,
-				)
-				if err != nil {
-					fmt.Printf("Failed to send zero window probe: %v\n", err)
-					continue
-				}
-			} else {
-				// Retransmit first byte of first unacked segment
-				lastUnacked := s.sendBuffer.unackedSegments[0]
-				err := t.SendTCPPacket(
-					s.LocalAddr,
-					s.LocalPort,
-					s.RemoteAddr,
-					s.RemotePort,
-					lastUnacked.Data[:1],
+					probe,
 					header.TCPFlagAck,
 				)
 				if err != nil {
@@ -589,6 +579,7 @@ func (t *Tcp) handleSending(s *Socket) {
 			segment.Data,
 			header.TCPFlagAck,
 		)
+		s.sendBuffer.sndNxt += uint32(len(segment.Data))
 
 		// Release locks
 		s.sendBuffer.condEmpty.L.Unlock()
