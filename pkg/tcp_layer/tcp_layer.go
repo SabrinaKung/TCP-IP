@@ -126,7 +126,6 @@ func (t *Tcp) Connect(addr netip.Addr, port uint16) (*Connection, error) {
 		socket.RemotePort,
 		[]byte{},
 		header.TCPFlagSyn,
-		socket.sendBuffer.sndNxt,
 	)
 	if err != nil {
 		t.removeSocket(socket) // Clean up on send error
@@ -256,7 +255,6 @@ func (t *Tcp) HandleTCPPacket(packet *common.IpPacket, networkApi common.Network
 				newSocket.RemotePort,
 				[]byte{},
 				header.TCPFlagSyn|header.TCPFlagAck,
-				socket.sendBuffer.sndNxt,
 			)
 			if err != nil {
 				t.removeSocket(newSocket)
@@ -284,14 +282,13 @@ func (t *Tcp) HandleTCPPacket(packet *common.IpPacket, networkApi common.Network
 				socket.RemotePort,
 				[]byte{},
 				header.TCPFlagAck,
-				socket.sendBuffer.sndNxt,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to send ACK: %v", err)
 			}
 			socket.State = ESTABLISHED
 			t.StartSocketSending(socket)
-			go t.StratRetransmitting(socket)
+			// go t.StratRetransmitting(socket)
 		}
 
 	case SYN_RECEIVED:
@@ -307,7 +304,7 @@ func (t *Tcp) HandleTCPPacket(packet *common.IpPacket, networkApi common.Network
 				socket.AcceptChan <- socket
 			}
 			t.StartSocketSending(socket)
-			go t.StratRetransmitting(socket)
+			// go t.StratRetransmitting(socket)
 		}
 
 	case ESTABLISHED:
@@ -343,7 +340,6 @@ func (t *Tcp) HandleTCPPacket(packet *common.IpPacket, networkApi common.Network
 				socket.RemotePort,
 				[]byte{},
 				header.TCPFlagAck,
-				socket.sendBuffer.sndNxt,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to send ACK: %v", err)
@@ -356,7 +352,7 @@ func (t *Tcp) HandleTCPPacket(packet *common.IpPacket, networkApi common.Network
 
 func (t *Tcp) SendTCPPacket(sourceIp netip.Addr, sourcePort uint16,
 	destIp netip.Addr, destPort uint16,
-	payload []byte, tcpFlag uint8, seqNum uint32) error {
+	payload []byte, tcpFlag uint8, explicitSeqNum ...uint32) error {
 
 	// Create connection ID to find the socket
 	connID := ConnectionID{
@@ -376,62 +372,14 @@ func (t *Tcp) SendTCPPacket(sourceIp netip.Addr, sourcePort uint16,
 			sourceIp, sourcePort, destIp, destPort)
 	}
 
-	// fmt.Printf("socket.sendBuffer.sndNxt: %d\n", socket.sendBuffer.sndNxt)
-	tcpHdr := header.TCPFields{
-		SrcPort:       sourcePort,
-		DstPort:       destPort,
-		SeqNum:        socket.sendBuffer.sndNxt,
-		AckNum:        socket.recvBuffer.rcvNxt,
-		DataOffset:    20,
-		Flags:         tcpFlag,
-		WindowSize:    socket.recvBuffer.rcvWnd,
-		Checksum:      0,
-		UrgentPointer: 0,
-	}
-
-	// Compute checksum
-	checksum := tcpUtils.ComputeTCPChecksum(&tcpHdr, sourceIp, destIp, payload)
-	tcpHdr.Checksum = checksum
-
-	// Serialize the TCP header
-	tcpHdrBytes := make(header.TCP, tcpUtils.TcpHeaderLen)
-	tcpHdrBytes.Encode(&tcpHdr)
-
-	// Combine header and payload
-	ipPacketPayload := make([]byte, 0, len(tcpHdrBytes)+len(payload))
-	ipPacketPayload = append(ipPacketPayload, tcpHdrBytes...)
-	ipPacketPayload = append(ipPacketPayload, payload...)
-
-	// Send via network layer
-	err := t.networkLayer.SendIP(destIp, uint8(common.ProtocolTypeTcp), ipPacketPayload)
-	if err != nil {
-		return fmt.Errorf("failed to send TCP packet: %v", err)
-	}
-
-	// print("finish SendTCPPacket\n")
-	return nil
-}
-
-func (t *Tcp) SendTCPPacketForRetransmit(sourceIp netip.Addr, sourcePort uint16,
-	destIp netip.Addr, destPort uint16,
-	payload []byte, tcpFlag uint8, seqNum uint32) error {
-
-	// Create connection ID to find the socket
-	connID := ConnectionID{
-		LocalAddr:  sourceIp,
-		LocalPort:  sourcePort,
-		RemoteAddr: destIp,
-		RemotePort: destPort,
-	}
-
-	// Find the socket
-	t.socketMutex.Lock()
-	socket, exists := t.activeSockets[connID]
-	t.socketMutex.Unlock()
-
-	if !exists {
-		return fmt.Errorf("no socket found for connection %s:%d -> %s:%d",
-			sourceIp, sourcePort, destIp, destPort)
+	// Get sequence number - use explicit if provided, otherwise use sndNxt
+	var seqNum uint32
+	if len(explicitSeqNum) > 0 {
+		seqNum = explicitSeqNum[0]
+	} else {
+		socket.sendBuffer.mutex.Lock()
+		seqNum = socket.sendBuffer.sndNxt
+		socket.sendBuffer.mutex.Unlock()
 	}
 
 	// fmt.Printf("socket.sendBuffer.sndNxt: %d\n", socket.sendBuffer.sndNxt)
@@ -579,7 +527,6 @@ func (t *Tcp) handleZeroWndProbing(s *Socket) {
 					s.RemotePort,
 					probe,
 					header.TCPFlagAck,
-					s.sendBuffer.sndNxt,
 				)
 				if err != nil {
 					fmt.Printf("Failed to send zero window probe: %v\n", err)
@@ -643,9 +590,7 @@ func (t *Tcp) handleSending(s *Socket) {
 			s.RemotePort,
 			segment.Data,
 			header.TCPFlagAck,
-			s.sendBuffer.sndNxt,
 		)
-		
 
 		// Release locks
 		s.sendBuffer.condEmpty.L.Unlock()
@@ -665,11 +610,11 @@ func (t *Tcp) handleSending(s *Socket) {
 	}
 }
 
-func (t *Tcp) StratRetransmitting(s *Socket){
-	for{
+func (t *Tcp) StratRetransmitting(s *Socket) {
+	for {
 		s.sendBuffer.mutex.Lock()
-		for _, segment := range s.sendBuffer.unackedSegments{
-			err := t.SendTCPPacketForRetransmit(
+		for _, segment := range s.sendBuffer.unackedSegments {
+			err := t.SendTCPPacket(
 				s.LocalAddr,
 				s.LocalPort,
 				s.RemoteAddr,
