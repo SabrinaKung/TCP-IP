@@ -177,34 +177,37 @@ func (rb *ReceiveBuffer) ProcessSegment(segment *Segment) error {
 	rb.mutex.Lock()
 	defer rb.mutex.Unlock()
 
+	// Always process the segment, even if window is zero
+	// This ensures we can still advance sequence numbers and send ACKs
 	availableWindow := int(rb.rcvWnd)
-	if availableWindow <= 0 {
-		fmt.Printf("Receive window is full, cannot accept any more data\n")
-		return fmt.Errorf("receive window full")
-	}
 
-	// If segment data is larger than available window, only accept up to available window
-	// Might not need this section
-	dataToAccept := segment.Data
-	if len(dataToAccept) > availableWindow {
-		fmt.Printf("Segment too large, accepting partial data up to receive window limit, SeqNum: %d, Length: %d\n",
-			segment.SeqNum, availableWindow)
-		dataToAccept = dataToAccept[:availableWindow]
-	}
-
-	// Check if this is the next expected segment
+	// If this is the next expected segment
 	if segment.SeqNum == rb.rcvNxt {
-		fmt.Printf("Processing in-order segment, SeqNum: %d, Length: %d\n",
-			segment.SeqNum, len(dataToAccept))
+		fmt.Printf("Processing in-order segment, SeqNum: %d, Length: %d, Available Window: %d\n",
+			segment.SeqNum, len(segment.Data), availableWindow)
 
-		// Add accepted data to buffer
-		rb.buffer = append(rb.buffer, dataToAccept...)
-		// Update next expected sequence number
-		rb.rcvNxt += uint32(len(dataToAccept))
-		rb.rcvWnd -= uint16(len(dataToAccept))
+		if availableWindow > 0 {
+			// Calculate how much data we can accept
+			acceptLength := len(segment.Data)
+			if acceptLength > availableWindow {
+				acceptLength = availableWindow
+			}
 
-		// Process any buffered segments that are now in order
-		rb.processBufferedSegments()
+			// Add accepted data to buffer
+			rb.buffer = append(rb.buffer, segment.Data[:acceptLength]...)
+
+			// Update window and sequence number based on accepted data
+			rb.rcvWnd -= uint16(acceptLength)
+			rb.rcvNxt += uint32(acceptLength)
+
+			// Process any buffered segments that are now in order
+			rb.processBufferedSegments()
+		} else {
+			// fmt.Printf("Zero window advertised, maintaining sequence numbers but not accepting data\n")
+			// Don't store data but maintain sequence tracking
+			// This is crucial for zero window probing to work correctly
+		}
+
 		return nil
 	}
 
@@ -212,7 +215,11 @@ func (rb *ReceiveBuffer) ProcessSegment(segment *Segment) error {
 	if segment.SeqNum > rb.rcvNxt {
 		fmt.Printf("Buffering out-of-order segment, Expected: %d, Got: %d\n",
 			rb.rcvNxt, segment.SeqNum)
-		rb.bufferSegment(segment)
+
+		// Only buffer if we have window space
+		if availableWindow > 0 {
+			rb.bufferSegment(segment)
+		}
 		return nil
 	}
 
@@ -232,6 +239,8 @@ func (rb *ReceiveBuffer) Read(n int) ([]byte, error) {
 	}
 	data := rb.buffer[:readLen]
 	rb.buffer = rb.buffer[readLen:]
+
+	// Update receive window as we free up space
 	rb.rcvWnd += uint16(readLen)
 
 	return data, nil
