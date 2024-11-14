@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	DefaultBufferSize = 10
+	DefaultBufferSize = 1024
 )
 
 // Segment represents a TCP segment with metadata
@@ -161,15 +161,18 @@ type ReceiveBuffer struct {
 	rcvWnd      uint16 // receive window size
 	oooSegments []*Segment
 	mutex       sync.Mutex
+	condEmpty   sync.Cond
 }
 
 func NewReceiveBuffer(rcvNxt uint32) *ReceiveBuffer {
-	return &ReceiveBuffer{
+	ret := &ReceiveBuffer{
 		buffer:      make([]byte, 0),
 		rcvNxt:      rcvNxt,
 		rcvWnd:      DefaultBufferSize,
 		oooSegments: make([]*Segment, 0),
 	}
+	ret.condEmpty = *sync.NewCond(&ret.mutex)
+	return ret
 }
 
 // ProcessSegment handles an incoming segment
@@ -208,6 +211,7 @@ func (rb *ReceiveBuffer) ProcessSegment(segment *Segment) error {
 			// This is crucial for zero window probing to work correctly
 		}
 
+		rb.condEmpty.Signal()
 		return nil
 	}
 
@@ -230,8 +234,8 @@ func (rb *ReceiveBuffer) Read(n int) ([]byte, error) {
 	rb.mutex.Lock()
 	defer rb.mutex.Unlock()
 
-	if len(rb.buffer) == 0 {
-		return nil, nil
+	for len(rb.buffer) == 0 {
+		rb.condEmpty.Wait()
 	}
 	readLen := n
 	if len(rb.buffer) < n {
