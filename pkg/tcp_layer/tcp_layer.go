@@ -310,7 +310,8 @@ func (t *Tcp) HandleTCPPacket(packet *common.IpPacket, networkApi common.Network
 		tcpPayload := packet.Message[header.TCPMinimumSize:]
 
 		socket.sendBuffer.UpdateWindowSize(tcpHdr.WindowSize)
-		socket.sendBuffer.Acknowledge(tcpHdr.AckNum)
+		// socket.sendBuffer.Acknowledge(tcpHdr.AckNum)
+		socket.sendBuffer.ProcessAck(tcpHdr.AckNum)
 		// fmt.Printf("socket.sendBuffer.sndUna: %d\n", socket.sendBuffer.sndUna)
 
 		// Deal with tcp packet with payload
@@ -350,8 +351,9 @@ func (t *Tcp) HandleTCPPacket(packet *common.IpPacket, networkApi common.Network
 
 func (t *Tcp) SendTCPPacket(sourceIp netip.Addr, sourcePort uint16,
 	destIp netip.Addr, destPort uint16,
-	payload []byte, tcpFlag uint8) error {
+	payload []byte, tcpFlag uint8, explicitSeqNum ...uint32) error {
 
+	// fmt.Printf("payload: %s\n", payload)
 	// Create connection ID to find the socket
 	connID := ConnectionID{
 		LocalAddr:  sourceIp,
@@ -370,11 +372,21 @@ func (t *Tcp) SendTCPPacket(sourceIp netip.Addr, sourcePort uint16,
 			sourceIp, sourcePort, destIp, destPort)
 	}
 
+	// Get sequence number - use explicit if provided, otherwise use sndNxt
+	var seqNum uint32
+	if len(explicitSeqNum) > 0 {
+		seqNum = explicitSeqNum[0]
+	} else {
+		socket.sendBuffer.mutex.Lock()
+		seqNum = socket.sendBuffer.sndNxt
+		socket.sendBuffer.mutex.Unlock()
+	}
+
 	// fmt.Printf("socket.sendBuffer.sndNxt: %d\n", socket.sendBuffer.sndNxt)
 	tcpHdr := header.TCPFields{
 		SrcPort:       sourcePort,
 		DstPort:       destPort,
-		SeqNum:        socket.sendBuffer.sndNxt,
+		SeqNum:        seqNum,
 		AckNum:        socket.recvBuffer.rcvNxt,
 		DataOffset:    20,
 		Flags:         tcpFlag,
@@ -395,6 +407,18 @@ func (t *Tcp) SendTCPPacket(sourceIp netip.Addr, sourcePort uint16,
 	ipPacketPayload := make([]byte, 0, len(tcpHdrBytes)+len(payload))
 	ipPacketPayload = append(ipPacketPayload, tcpHdrBytes...)
 	ipPacketPayload = append(ipPacketPayload, payload...)
+
+	// Record transmission time for the segment
+	if len(payload) > 0 {
+		socket.sendBuffer.mutex.Lock()
+		for _, segment := range socket.sendBuffer.unackedSegments {
+			if segment.SeqNum == seqNum {
+				segment.LastSent = time.Now()
+				break
+			}
+		}
+		socket.sendBuffer.mutex.Unlock()
+	}
 
 	// Send via network layer
 	err := t.networkLayer.SendIP(destIp, uint8(common.ProtocolTypeTcp), ipPacketPayload)
@@ -486,6 +510,14 @@ func (t *Tcp) GetSockets() []*Socket {
 func (t *Tcp) StartSocketSending(s *Socket) {
 	go t.handleSending(s)        // Handle normal sending
 	go t.handleZeroWndProbing(s) // Handle zero window probing
+	go func() {
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for s.State == ESTABLISHED {
+			<-ticker.C
+			s.sendBuffer.HandleRetransmission(t, s)
+		}
+	}()
 }
 
 func (t *Tcp) handleZeroWndProbing(s *Socket) {
@@ -567,6 +599,9 @@ func (t *Tcp) handleSending(s *Socket) {
 			s.sendBuffer.condSndWnd.L.Unlock()
 			return
 		}
+
+		// Store the current sequence number in the segment
+		segment.SeqNum = s.sendBuffer.sndNxt
 
 		// Track unacknowledged segment
 		s.sendBuffer.unackedSegments = append(s.sendBuffer.unackedSegments, segment)
