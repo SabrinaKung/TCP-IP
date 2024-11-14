@@ -380,6 +380,64 @@ func (t *Tcp) SendTCPPacket(sourceIp netip.Addr, sourcePort uint16,
 	tcpHdr := header.TCPFields{
 		SrcPort:       sourcePort,
 		DstPort:       destPort,
+		SeqNum:        socket.sendBuffer.sndNxt,
+		AckNum:        socket.recvBuffer.rcvNxt,
+		DataOffset:    20,
+		Flags:         tcpFlag,
+		WindowSize:    socket.recvBuffer.rcvWnd,
+		Checksum:      0,
+		UrgentPointer: 0,
+	}
+
+	// Compute checksum
+	checksum := tcpUtils.ComputeTCPChecksum(&tcpHdr, sourceIp, destIp, payload)
+	tcpHdr.Checksum = checksum
+
+	// Serialize the TCP header
+	tcpHdrBytes := make(header.TCP, tcpUtils.TcpHeaderLen)
+	tcpHdrBytes.Encode(&tcpHdr)
+
+	// Combine header and payload
+	ipPacketPayload := make([]byte, 0, len(tcpHdrBytes)+len(payload))
+	ipPacketPayload = append(ipPacketPayload, tcpHdrBytes...)
+	ipPacketPayload = append(ipPacketPayload, payload...)
+
+	// Send via network layer
+	err := t.networkLayer.SendIP(destIp, uint8(common.ProtocolTypeTcp), ipPacketPayload)
+	if err != nil {
+		return fmt.Errorf("failed to send TCP packet: %v", err)
+	}
+
+	// print("finish SendTCPPacket\n")
+	return nil
+}
+
+func (t *Tcp) SendTCPPacketForRetransmit(sourceIp netip.Addr, sourcePort uint16,
+	destIp netip.Addr, destPort uint16,
+	payload []byte, tcpFlag uint8, seqNum uint32) error {
+
+	// Create connection ID to find the socket
+	connID := ConnectionID{
+		LocalAddr:  sourceIp,
+		LocalPort:  sourcePort,
+		RemoteAddr: destIp,
+		RemotePort: destPort,
+	}
+
+	// Find the socket
+	t.socketMutex.Lock()
+	socket, exists := t.activeSockets[connID]
+	t.socketMutex.Unlock()
+
+	if !exists {
+		return fmt.Errorf("no socket found for connection %s:%d -> %s:%d",
+			sourceIp, sourcePort, destIp, destPort)
+	}
+
+	// fmt.Printf("socket.sendBuffer.sndNxt: %d\n", socket.sendBuffer.sndNxt)
+	tcpHdr := header.TCPFields{
+		SrcPort:       sourcePort,
+		DstPort:       destPort,
 		SeqNum:        seqNum,
 		AckNum:        socket.recvBuffer.rcvNxt,
 		DataOffset:    20,
@@ -611,7 +669,7 @@ func (t *Tcp) StratRetransmitting(s *Socket){
 	for{
 		s.sendBuffer.mutex.Lock()
 		for _, segment := range s.sendBuffer.unackedSegments{
-			err := t.SendTCPPacket(
+			err := t.SendTCPPacketForRetransmit(
 				s.LocalAddr,
 				s.LocalPort,
 				s.RemoteAddr,
