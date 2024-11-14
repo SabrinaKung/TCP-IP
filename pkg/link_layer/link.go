@@ -60,15 +60,15 @@ func (l *LinkLayer) Initialize(configFile string) error {
 	for _, conn := range l.connMap {
 		go func() {
 			for {
-				buffer := make([]byte, common.MessageSize)
+				buffer := make([]byte, common.MTU)
 				// bytesRead, sourceAddr, err := conn.ReadFromUDP(buffer)
-				_, _, err := conn.ReadFromUDP(buffer)
+				bytesRead, _, err := conn.ReadFromUDP(buffer)
 				if err != nil {
 					log.Println(err)
 				}
 
 				// log.Printf("Received %d byte from %s", bytesRead, sourceAddr.String())
-				err = l.handleUdpPacket(buffer, conn)
+				err = l.handleUdpPacket(buffer[:bytesRead], conn)
 				if err != nil {
 					log.Println(err)
 				}

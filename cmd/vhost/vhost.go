@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/netip"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"team21/ip/pkg/link_layer"
 	"team21/ip/pkg/network_layer"
 	"team21/ip/pkg/tcp_layer"
+	"time"
 )
 
 var tcpStack *tcp_layer.Tcp
@@ -118,6 +120,10 @@ func runCLI(network *network_layer.NetworkLayer, link *link_layer.LinkLayer) {
 			handleConnect(parts[1:])
 		case "ls":
 			listSockets(tcpStack)
+		case "s":
+			handleSend(parts[1:], tcpStack)
+		case "r":
+			handleReceive(parts[1:], tcpStack)
 		case "exit", "q":
 			return
 		default:
@@ -265,4 +271,147 @@ func listSockets(network *tcp_layer.Tcp) {
 			socket.RemotePort,
 			socket.State)
 	}
+}
+
+func handleSend(args []string, tcp *tcp_layer.Tcp) {
+	if len(args) != 2 {
+		fmt.Println("Usage: s <socket ID> <bytes>")
+		return
+	}
+
+	// Parse socket ID
+	socketID, err := strconv.Atoi(args[0])
+	if err != nil {
+		fmt.Printf("Invalid socket ID: %v\n", err)
+		return
+	}
+
+	// Get the socket
+	socket := findSocketByID(tcp, socketID)
+	if socket == nil {
+		fmt.Printf("Socket %d not found\n", socketID)
+		return
+	}
+
+	// Check if it's a listen socket
+	if socket.State == tcp_layer.LISTEN {
+		fmt.Println("Cannot send on listen socket")
+		return
+	}
+
+	// Send the data from application
+	data := []byte(args[1])
+	// n, err := socket.VWrite(data)
+	_, err = socket.VWrite(data)
+	if err != nil {
+		fmt.Printf("Send error: %v\n", err)
+		return
+	}
+
+	// fmt.Printf("VWrite %d bytes\n", n)
+}
+
+func handleReceive(args []string, tcp *tcp_layer.Tcp) {
+	if len(args) != 2 {
+		fmt.Println("Usage: r <socket ID> <numbytes>")
+		return
+	}
+
+	// Parse socket ID and number of bytes
+	socketID, err := strconv.Atoi(args[0])
+	if err != nil {
+		fmt.Printf("Invalid socket ID: %v\n", err)
+		return
+	}
+
+	numBytes, err := strconv.Atoi(args[1])
+	if err != nil {
+		fmt.Printf("Invalid number of bytes: %v\n", err)
+		return
+	}
+
+	// Get the socket
+	socket := findSocketByID(tcp, socketID)
+	if socket == nil {
+		fmt.Printf("Socket %d not found\n", socketID)
+		return
+	}
+
+	// Read the data
+	data, err := socket.VRead(numBytes)
+	if err != nil {
+		fmt.Printf("Read error: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Read %d bytes: %s\n", len(data), string(data))
+}
+
+func handleSendFile (args []string, tcp *tcp_layer.Tcp) {
+	if len(args) != 3 {
+		fmt.Println("Usage: sf <file path> <addr> <port>")
+		return
+	}
+	// first we connect
+	destIP, err := netip.ParseAddr(args[1])
+	if err != nil {
+		fmt.Printf("Invalid IP address: %v\n", err)
+		return
+	}
+
+	port, err := strconv.ParseUint(args[2], 10, 16)
+	if err != nil {
+		fmt.Printf("Invalid port number: %v\n", err)
+		return
+	}
+
+	conn, err := tcpStack.Connect(destIP, uint16(port))
+	if err != nil {
+		fmt.Printf("Failed to connect: %v\n", err)
+		return
+	}
+	// defer conn.close()
+	file, err := os.Open(args[0]) 
+	if err != nil {
+		fmt.Printf("Failed to open file: %v\n", err)
+		return
+	}
+	defer file.Close()
+
+	buf := make([]byte, 1024)
+	for {
+		n, err := file.Read(buf)
+		if err != nil {
+			if err == io.EOF {
+				break 
+			}
+			fmt.Printf("Failed to read file: %v\n", err)
+			return
+		}
+
+		written := 0
+		for written < n {
+			w, err := conn.Socket.VWrite(buf[written:n]) 
+			if w > 0 {
+				written += w 
+			}
+			if err != nil {
+				fmt.Printf("Write failed, retrying after delay: %v\n", err)
+				time.Sleep(100 * time.Millisecond)
+			}
+		}
+		fmt.Printf("Wrote %d bytes\n", written)
+	}
+	fmt.Println("File sent successfully.")
+}
+
+
+func findSocketByID(tcp *tcp_layer.Tcp, socketID int) *tcp_layer.Socket {
+	sockets := tcp.GetSockets()
+	for _, socket := range sockets {
+		if socket.ID == socketID {
+			return socket
+		}
+	}
+	return nil
 }
