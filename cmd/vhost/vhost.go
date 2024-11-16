@@ -124,6 +124,8 @@ func runCLI(network *network_layer.NetworkLayer, link *link_layer.LinkLayer) {
 			handleSend(parts[1:], tcpStack)
 		case "r":
 			handleReceive(parts[1:], tcpStack)
+		case "cl":
+			handleClose(parts[1:], tcpStack)
 		case "exit", "q":
 			return
 		default:
@@ -429,4 +431,31 @@ func findSocketByID(tcp *tcp_layer.Tcp, socketID int) *tcp_layer.Socket {
 		}
 	}
 	return nil
+}
+
+func handleClose(args []string, tcp *tcp_layer.Tcp) {
+	if len(args) != 1 {
+		fmt.Println("Usage: cl <socket ID>")
+		return
+	}
+
+	// Parse socket ID
+	socketID, err := strconv.Atoi(args[0])
+	if err != nil {
+		fmt.Printf("Invalid socket ID: %v\n", err)
+		return
+	}
+
+	// Get the socket
+	socket := findSocketByID(tcp, socketID)
+	if socket == nil {
+		fmt.Printf("Socket %d not found\n", socketID)
+		return
+	}
+
+	// Initiate close
+	err = socket.VClose()
+	if err != nil {
+		fmt.Printf("Close error: %v\n", err)
+	}
 }

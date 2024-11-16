@@ -122,7 +122,6 @@ func (sb *SendBuffer) ReadSegment(segmentSize uint32) (*Segment, error) {
 		Length:    len(data),
 	}
 
-	// Don't update sndNxt here - it will be updated after successful send
 	return segment, nil
 }
 
@@ -134,7 +133,7 @@ func (sb *SendBuffer) Acknowledge(ackNum uint32) {
 	if ackNum > sb.sndUna && ackNum <= sb.sndLbw {
 		sb.sndUna = ackNum
 	}
-	// TODO remove unack segments 
+	// TODO remove unack segments
 }
 
 func (sb *SendBuffer) AvailableSpace() uint32 {
