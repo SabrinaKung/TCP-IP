@@ -7,16 +7,36 @@ import (
 )
 
 const (
-	DefaultBufferSize = 1024
+	DefaultBufferSize = 65535
 )
+
+const (
+	// RTT and RTO constants
+	Alpha      = 0.125                  // Smoothing factor for SRTT
+	Beta       = 0.25                   // Smoothing factor for RTTVAR
+	K          = 4                      // Factor for RTO calculation
+	MinRTO     = time.Millisecond       // Minimum RTO (1ms as specified)
+	MaxRTO     = 60 * time.Second       // Maximum RTO
+	InitialRTO = 100 * time.Millisecond // Initial RTO before RTT samples
+	MaxTryTime = 10
+)
+
+// RTTStats maintains RTT statistics for RTO calculation
+type RTTStats struct {
+	srtt   time.Duration // Smoothed round-trip time
+	rttvar time.Duration // Round-trip time variation
+	rto    time.Duration // Current retransmission timeout
+	mu     sync.Mutex
+}
 
 // Segment represents a TCP segment with metadata
 type Segment struct {
 	Data      []byte
 	SeqNum    uint32
-	Timestamp int64
 	Acked     bool
 	Length    int
+	RetxCount int       // Number of retransmissions
+	LastSent  time.Time // Last time this segment was sent
 }
 
 // SendBuffer manages the sending side of TCP
@@ -28,6 +48,7 @@ type SendBuffer struct {
 	sndLbw          uint32 // last byte written by application
 	initialSeqNum   uint32
 	unackedSegments []*Segment
+	rttStats        RTTStats
 	mutex           sync.Mutex
 	condEmpty       *sync.Cond
 	condSndWnd      *sync.Cond
@@ -43,6 +64,7 @@ func NewSendBuffer(isn uint32) *SendBuffer {
 		initialSeqNum:   isn,
 		unackedSegments: make([]*Segment, 0),
 	}
+	sb.rttStats.rto = InitialRTO
 	mutexEmpty := &sync.Mutex{}
 	mutexSndWnd := &sync.Mutex{}
 	sb.condEmpty = sync.NewCond(mutexEmpty)
@@ -117,7 +139,7 @@ func (sb *SendBuffer) ReadSegment(segmentSize uint32) (*Segment, error) {
 	segment := &Segment{
 		Data:      data,
 		SeqNum:    sb.sndNxt,
-		Timestamp: time.Now().UnixNano(),
+		LastSent:  time.Now(),
 		Acked:     false,
 		Length:    len(data),
 	}
@@ -125,16 +147,31 @@ func (sb *SendBuffer) ReadSegment(segmentSize uint32) (*Segment, error) {
 	// Don't update sndNxt here - it will be updated after successful send
 	return segment, nil
 }
-
-func (sb *SendBuffer) Acknowledge(ackNum uint32) {
+// ProcessAck processes incoming ACKs and updates RTT measurements
+func (sb *SendBuffer) ProcessAck(ackNum uint32) {
 	sb.mutex.Lock()
 	defer sb.mutex.Unlock()
 
-	// fmt.Printf("Acknowledge: %d\n", ackNum)
-	if ackNum > sb.sndUna && ackNum <= sb.sndLbw {
-		sb.sndUna = ackNum
+	// Only update RTT for segments that weren't retransmitted (Karn's algorithm)
+	var newUnackedSegments []*Segment
+
+	for _, segment := range sb.unackedSegments {
+		if segment.SeqNum+uint32(segment.Length) <= ackNum {
+			// TODO just update RTT once
+			if segment.RetxCount == 0 {
+				// Only update RTT for non-retransmitted segments
+				rtt := time.Since(segment.LastSent)
+				sb.rttStats.UpdateRTT(rtt)
+			}
+			segment.Acked = true
+		} else {
+			newUnackedSegments = append(newUnackedSegments, segment)
+		}
 	}
-	// TODO remove unack segments 
+
+	sb.unackedSegments = newUnackedSegments
+	sb.sndUna = ackNum
+
 }
 
 func (sb *SendBuffer) AvailableSpace() uint32 {
@@ -279,3 +316,79 @@ func (rb *ReceiveBuffer) processBufferedSegments() {
 		rb.oooSegments = rb.oooSegments[1:]
 	}
 }
+
+// UpdateRTT updates RTT statistics based on a new RTT measurement
+func (stats *RTTStats) UpdateRTT(measurement time.Duration) {
+	stats.mu.Lock()
+	defer stats.mu.Unlock()
+
+	if stats.srtt == 0 {
+		// First RTT measurement
+		stats.srtt = measurement
+		stats.rttvar = measurement / 2
+	} else {
+		// Update RTTVAR and SRTT as per RFC 6298
+		diff := stats.srtt - measurement
+		if diff < 0 {
+			diff = -diff
+		}
+		stats.rttvar = time.Duration((1-Beta)*float64(stats.rttvar) + Beta*float64(diff))
+		stats.srtt = time.Duration((1-Alpha)*float64(stats.srtt) + Alpha*float64(measurement))
+	}
+
+	// Calculate new RTO
+	stats.rto = stats.srtt + K*stats.rttvar
+	if stats.rto < MinRTO {
+		stats.rto = MinRTO
+	} else if stats.rto > MaxRTO {
+		stats.rto = MaxRTO
+	}
+}
+
+// HandleRetransmission handles the retransmission of unacked segments
+// func (sb *SendBuffer) HandleRetransmission(tcp *Tcp, s *Socket) {
+
+	// var segmentsToRetransmit []*Segment
+	// now := time.Now()
+
+	// sb.mutex.Lock()
+	// for _, segment := range sb.unackedSegments {
+	// 	if !segment.Acked && now.Sub(segment.LastSent) > sb.rttStats.rto {
+	// 		segmentCopy := &Segment{
+	// 			Data:      make([]byte, len(segment.Data)),
+	// 			SeqNum:    segment.SeqNum,
+	// 			RetxCount: segment.RetxCount,
+	// 		}
+	// 		copy(segmentCopy.Data, segment.Data)
+	// 		segmentsToRetransmit = append(segmentsToRetransmit, segmentCopy)
+
+	// 		sb.rttStats.mu.Lock()
+	// 		sb.rttStats.rto *= 2
+	// 		if sb.rttStats.rto > MaxRTO {
+	// 			sb.rttStats.rto = MaxRTO
+	// 		}
+	// 		sb.rttStats.mu.Unlock()
+
+	// 		segment.RetxCount++
+	// 	}
+	// }
+	// sb.mutex.Unlock()
+
+	// for _, segment := range segmentsToRetransmit {
+	// 	// Pass the original sequence number as the explicit sequence number
+		// err := tcp.SendTCPPacket(
+		// 	s.LocalAddr,
+		// 	s.LocalPort,
+		// 	s.RemoteAddr,
+		// 	s.RemotePort,
+		// 	segment.Data,
+		// 	header.TCPFlagAck,
+		// 	segment.SeqNum, // Pass original sequence number
+		// )
+		// if err != nil {
+		// 	fmt.Printf("Failed to retransmit segment: %v\n", err)
+		// 	continue
+	// 	}
+	// }
+// }
+
