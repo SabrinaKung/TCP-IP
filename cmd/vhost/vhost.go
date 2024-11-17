@@ -104,13 +104,13 @@ func runCLI(network *network_layer.NetworkLayer, link *link_layer.LinkLayer) {
 			listRoutes(network)
 		case "up":
 			if len(parts) != 2 {
-				fmt.Println("Usage: up <ifname>")
+				fmt.Println("Usage: up <interface name>")
 				continue
 			}
 			enableInterface(link, parts[1])
 		case "down":
 			if len(parts) != 2 {
-				fmt.Println("Usage: down <ifname>")
+				fmt.Println("Usage: down <interface name>")
 				continue
 			}
 			disableInterface(link, parts[1])
@@ -127,7 +127,23 @@ func runCLI(network *network_layer.NetworkLayer, link *link_layer.LinkLayer) {
 		case "exit", "q":
 			return
 		default:
-			fmt.Println("Unknown command. Available commands: send, li, ln, lr, exit, q")
+			fmt.Printf("Invalid command: %s\n"+
+				"Commands: \n"+
+				"    exit Terminate this program\n"+
+				"      li List interfaces\n"+
+				"      lr List routes\n"+
+				"      ln List available neighbors\n"+
+				"      up Enable an interface\n"+
+				"    down Disable an interface\n"+
+				"    send Send test packet\n"+
+				"      ls List sockets\n"+
+				"      a Listen on a port and accept new connections\n"+
+				"      c Connect to a TCP socket\n"+
+				"      s Send on a socket\n"+
+				"      r Receive on a socket\n"+
+				"     sf Send a file\n"+
+				"     rf Receive a file\n"+
+				"     cl Close socket\n", parts[0])
 		}
 	}
 }
@@ -275,7 +291,7 @@ func listSockets(network *tcp_layer.Tcp) {
 
 func handleSend(args []string, tcp *tcp_layer.Tcp) {
 	if len(args) != 2 {
-		fmt.Println("Usage: s <socket ID> <bytes>")
+		fmt.Println("Usage: s <socket ID> <data>")
 		return
 	}
 
@@ -347,7 +363,7 @@ func handleReceive(args []string, tcp *tcp_layer.Tcp) {
 	fmt.Printf("Read %d bytes: %s\n", len(data), string(data))
 }
 
-func handleSendFile (args []string, tcp *tcp_layer.Tcp) {
+func handleSendFile(args []string, tcp *tcp_layer.Tcp) {
 	if len(args) != 3 {
 		fmt.Println("Usage: sf <file path> <addr> <port>")
 		return
@@ -371,7 +387,7 @@ func handleSendFile (args []string, tcp *tcp_layer.Tcp) {
 		return
 	}
 	// defer conn.close()
-	file, err := os.Open(args[0]) 
+	file, err := os.Open(args[0])
 	if err != nil {
 		fmt.Printf("Failed to open file: %v\n", err)
 		return
@@ -383,7 +399,7 @@ func handleSendFile (args []string, tcp *tcp_layer.Tcp) {
 		n, err := file.Read(buf)
 		if err != nil {
 			if err == io.EOF {
-				break 
+				break
 			}
 			fmt.Printf("Failed to read file: %v\n", err)
 			return
@@ -391,9 +407,9 @@ func handleSendFile (args []string, tcp *tcp_layer.Tcp) {
 
 		written := 0
 		for written < n {
-			w, err := conn.Socket.VWrite(buf[written:n]) 
+			w, err := conn.Socket.VWrite(buf[written:n])
 			if w > 0 {
-				written += w 
+				written += w
 			}
 			if err != nil {
 				fmt.Printf("Write failed, retrying after delay: %v\n", err)
@@ -404,7 +420,6 @@ func handleSendFile (args []string, tcp *tcp_layer.Tcp) {
 	}
 	fmt.Println("File sent successfully.")
 }
-
 
 func findSocketByID(tcp *tcp_layer.Tcp, socketID int) *tcp_layer.Socket {
 	sockets := tcp.GetSockets()

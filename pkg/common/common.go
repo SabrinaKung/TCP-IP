@@ -5,8 +5,10 @@ import (
 	"encoding/binary"
 	"math/bits"
 	"net/netip"
-	"github.com/google/netstack/tcpip/header"
+	"time"
+
 	ipv4header "github.com/brown-csci1680/iptcp-headers"
+	"github.com/google/netstack/tcpip/header"
 )
 
 const (
@@ -18,6 +20,7 @@ const (
 	DefaultRouteTimeoutThreshold = 12
 	MTU                          = 1400
 	MaxTcpPayload 				 = MTU - header.IPv4MinimumSize - header.TCPMinimumSize
+	RetransmitTime               = 5 * time.Second
 )
 
 type RipEntry struct {

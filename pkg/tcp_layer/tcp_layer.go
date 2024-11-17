@@ -288,6 +288,7 @@ func (t *Tcp) HandleTCPPacket(packet *common.IpPacket, networkApi common.Network
 			}
 			socket.State = ESTABLISHED
 			t.StartSocketSending(socket)
+			// go t.StratRetransmitting(socket)
 		}
 
 	case SYN_RECEIVED:
@@ -303,6 +304,7 @@ func (t *Tcp) HandleTCPPacket(packet *common.IpPacket, networkApi common.Network
 				socket.AcceptChan <- socket
 			}
 			t.StartSocketSending(socket)
+			// go t.StratRetransmitting(socket)
 		}
 
 	case ESTABLISHED:
@@ -607,7 +609,6 @@ func (t *Tcp) handleSending(s *Socket) {
 			segment.Data,
 			header.TCPFlagAck,
 		)
-		s.sendBuffer.sndNxt += uint32(len(segment.Data))
 
 		// Release locks
 		s.sendBuffer.condEmpty.L.Unlock()
@@ -617,6 +618,7 @@ func (t *Tcp) handleSending(s *Socket) {
 			fmt.Println("Error sending packet:", err)
 			return
 		}
+		s.sendBuffer.sndNxt += uint32(len(segment.Data))
 
 		fmt.Printf("Sent %d bytes\n", len(segment.Data))
 
