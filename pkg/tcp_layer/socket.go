@@ -15,11 +15,20 @@ const (
 	SYN_SENT
 	SYN_RECEIVED
 	ESTABLISHED
+	FIN_WAIT_1 // After sending FIN
+	FIN_WAIT_2 // After receiving ACK of FIN
+	TIME_WAIT  // After receiving FIN from other side
+	CLOSE_WAIT // After receiving FIN from other side
+	LAST_ACK   // After sending FIN (after CLOSE_WAIT)
 )
 
 const (
 	InitialProbeTimeout = 1 * time.Second  // Initial probe timeout (RTO)
 	MaxProbeTimeout     = 60 * time.Second // Maximum probe timeout
+)
+
+const (
+	MSL = 1 * time.Minute // Maximum Segment Lifetime
 )
 
 func (s TCPState) String() string {
@@ -34,6 +43,16 @@ func (s TCPState) String() string {
 		return "SYN_RECEIVED"
 	case ESTABLISHED:
 		return "ESTABLISHED"
+	case FIN_WAIT_1:
+		return "FIN_WAIT_1"
+	case FIN_WAIT_2:
+		return "FIN_WAIT_2"
+	case TIME_WAIT:
+		return "TIME_WAIT"
+	case CLOSE_WAIT:
+		return "CLOSE_WAIT"
+	case LAST_ACK:
+		return "LAST_ACK"
 	default:
 		return "UNKNOWN"
 	}
@@ -58,10 +77,17 @@ type Socket struct {
 	// Buffer management
 	sendBuffer *SendBuffer
 	recvBuffer *ReceiveBuffer
+
+	closeFunc func(*Socket) error
 }
 
 func (s *Socket) VWrite(data []byte) (int, error) {
-	if s.State != ESTABLISHED {
+	// Check if socket has started closing process
+	if s.State == FIN_WAIT_1 || s.State == FIN_WAIT_2 || s.State == TIME_WAIT {
+		return 0, fmt.Errorf("cannot send after transport endpoint shutdown")
+	}
+
+	if s.State != ESTABLISHED && s.State != CLOSE_WAIT {
 		return 0, fmt.Errorf("socket not connected")
 	}
 
@@ -76,6 +102,11 @@ func (s *Socket) VWrite(data []byte) (int, error) {
 
 // VRead reads data from the socket
 func (s *Socket) VRead(n int) ([]byte, error) {
+	if s.State == FIN_WAIT_1 || s.State == FIN_WAIT_2 || s.State == TIME_WAIT {
+		return nil, fmt.Errorf("operation not permitted")
+	} else if s.State == CLOSE_WAIT {
+		return nil, fmt.Errorf("EOF")
+	}
 	if s.State != ESTABLISHED {
 		return nil, fmt.Errorf("socket not connected")
 	}
@@ -86,4 +117,11 @@ func (s *Socket) VRead(n int) ([]byte, error) {
 	}
 
 	return data, nil
+}
+
+func (s *Socket) VClose() error {
+	if s.closeFunc == nil {
+		return fmt.Errorf("close function not set")
+	}
+	return s.closeFunc(s)
 }

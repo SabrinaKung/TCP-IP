@@ -144,7 +144,6 @@ func (sb *SendBuffer) ReadSegment(segmentSize uint32) (*Segment, error) {
 		Length:    len(data),
 	}
 
-	// Don't update sndNxt here - it will be updated after successful send
 	return segment, nil
 }
 // ProcessAck processes incoming ACKs and updates RTT measurements

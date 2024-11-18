@@ -79,6 +79,7 @@ func (t *Tcp) Listen(port uint16) (*Socket, error) {
 		AcceptChan: make(chan *Socket),
 		sendBuffer: NewSendBuffer(isn),
 		recvBuffer: NewReceiveBuffer(0),
+		closeFunc:  t.CloseSocket,
 	}
 
 	t.listenSockets[port] = socket
@@ -103,6 +104,7 @@ func (t *Tcp) Connect(addr netip.Addr, port uint16) (*Connection, error) {
 		State:      SYN_SENT,
 		sendBuffer: NewSendBuffer(isn),
 		recvBuffer: NewReceiveBuffer(0),
+		closeFunc:  t.CloseSocket,
 	}
 
 	// Create connection ID
@@ -177,13 +179,6 @@ func (s *Socket) Accept() (*Socket, error) {
 	}
 }
 
-// func (t *Tcp) closeSocket(socket *Socket) {
-// 	socket.stateMutex.Lock()
-// 	socket.State = CLOSED
-// 	socket.stateMutex.Unlock()
-// 	t.removeSocket(socket)
-// }
-
 func (t *Tcp) HandleTCPPacket(packet *common.IpPacket, networkApi common.NetworkLayerAPI) error {
 	tcpHdr := tcpUtils.ParseTCPHeader(packet.Message[:header.TCPMinimumSize])
 
@@ -197,15 +192,9 @@ func (t *Tcp) HandleTCPPacket(packet *common.IpPacket, networkApi common.Network
 	tcpPayload := packet.Message[header.TCPMinimumSize:]
 	tcpComputedChecksum := tcpUtils.ComputeTCPChecksum(&tcpHdr, packet.Header.Src, packet.Header.Dst, tcpPayload)
 
-	// var tcpChecksumState string
-	if tcpComputedChecksum == tcpChecksumFromHeader {
-		// tcpChecksumState = "OK"
-	} else {
-		// tcpChecksumState = "FAIL"
+	if tcpComputedChecksum != tcpChecksumFromHeader {
 		return fmt.Errorf("invalid tcp checksum")
 	}
-	// fmt.Printf("Received TCP packet with IP Header:  %v\nTCP header:  %+v\nFlags:  %s\nTCP Checksum:  %s\nPayload (%d bytes):  %s\n",
-	// packet.Header, tcpHdr, tcpUtils.TCPFlagsAsString(tcpHdr.Flags), tcpChecksumState, len(tcpPayload), string(tcpPayload))
 
 	socket := t.findSocket(tcpHdr, packet)
 	if socket == nil {
@@ -215,7 +204,67 @@ func (t *Tcp) HandleTCPPacket(packet *common.IpPacket, networkApi common.Network
 	socket.stateMutex.Lock()
 	defer socket.stateMutex.Unlock()
 
-	// fmt.Printf("Processing packet for socket ID %d in state %v\n", socket.ID, socket.State)
+	// Handle received ACK for FIN
+	if tcpHdr.Flags&header.TCPFlagAck != 0 {
+		switch socket.State {
+		case FIN_WAIT_1:
+			if tcpHdr.AckNum == socket.sendBuffer.sndNxt {
+				socket.State = FIN_WAIT_2
+			}
+		case LAST_ACK:
+			socket.State = CLOSED
+			t.removeSocket(socket)
+			fmt.Printf("Socket %d closed\n", socket.ID)
+		}
+	}
+
+	// Handle received FIN
+	if tcpHdr.Flags&header.TCPFlagFin != 0 {
+		switch socket.State {
+		case ESTABLISHED:
+			socket.State = CLOSE_WAIT
+			socket.recvBuffer.rcvNxt++ // Account for the FIN
+			// Send ACK for FIN
+			err := t.SendTCPPacket(
+				socket.LocalAddr,
+				socket.LocalPort,
+				socket.RemoteAddr,
+				socket.RemotePort,
+				[]byte{},
+				header.TCPFlagAck,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to send ACK for FIN: %v", err)
+			}
+
+		case FIN_WAIT_2:
+			socket.State = TIME_WAIT
+			socket.recvBuffer.rcvNxt = tcpHdr.SeqNum + 1
+
+			// Send ACK for FIN
+			err := t.SendTCPPacket(
+				socket.LocalAddr,
+				socket.LocalPort,
+				socket.RemoteAddr,
+				socket.RemotePort,
+				[]byte{},
+				header.TCPFlagAck,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to send ACK for FIN: %v", err)
+			}
+
+			// Start TIME_WAIT timer
+			go func() {
+				time.Sleep(2 * MSL)
+				socket.stateMutex.Lock()
+				socket.State = CLOSED
+				socket.stateMutex.Unlock()
+				t.removeSocket(socket)
+				fmt.Printf("Socket %d closed\n", socket.ID)
+			}()
+		}
+	}
 
 	switch socket.State {
 	case LISTEN:
@@ -228,6 +277,7 @@ func (t *Tcp) HandleTCPPacket(packet *common.IpPacket, networkApi common.Network
 				RemoteAddr: packet.Header.Src,
 				RemotePort: uint16(tcpHdr.SrcPort),
 				State:      SYN_RECEIVED,
+				closeFunc:  t.CloseSocket,
 			}
 
 			// Initialize send buffer with a new ISN
@@ -671,4 +721,62 @@ func (t *Tcp) handleRetransmission(s *Socket) {
 		s.sendBuffer.mutex.Unlock()
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+func (t *Tcp) CloseSocket(socket *Socket) error {
+	socket.stateMutex.Lock()
+	defer socket.stateMutex.Unlock()
+
+	switch socket.State {
+	case ESTABLISHED:
+		// Make sure all data is sent and acknowledged
+		socket.sendBuffer.mutex.Lock()
+		if socket.sendBuffer.sndNxt < socket.sendBuffer.sndLbw {
+			socket.sendBuffer.mutex.Unlock()
+			return fmt.Errorf("cannot close: unsent data remains")
+		}
+		if socket.sendBuffer.sndUna < socket.sendBuffer.sndNxt {
+			socket.sendBuffer.mutex.Unlock()
+			return fmt.Errorf("cannot close: unacknowledged data remains")
+		}
+		socket.sendBuffer.mutex.Unlock()
+
+		socket.State = FIN_WAIT_1
+		err := t.SendTCPPacket(
+			socket.LocalAddr,
+			socket.LocalPort,
+			socket.RemoteAddr,
+			socket.RemotePort,
+			[]byte{},
+			header.TCPFlagFin|header.TCPFlagAck,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to send FIN+ACK: %v", err)
+		}
+		socket.sendBuffer.sndNxt++ // FIN consumes one sequence number
+
+	case CLOSE_WAIT:
+		socket.State = LAST_ACK
+		err := t.SendTCPPacket(
+			socket.LocalAddr,
+			socket.LocalPort,
+			socket.RemoteAddr,
+			socket.RemotePort,
+			[]byte{},
+			header.TCPFlagFin|header.TCPFlagAck,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to send FIN: %v", err)
+		}
+		socket.sendBuffer.sndNxt++ // FIN consumes one sequence number
+
+	case LISTEN:
+		socket.State = CLOSED
+		close(socket.AcceptChan)
+		t.removeSocket(socket)
+
+	default:
+		return fmt.Errorf("invalid state for close: %v", socket.State)
+	}
+	return nil
 }
