@@ -246,7 +246,7 @@ func (t *Tcp) HandleTCPPacket(packet *common.IpPacket, networkApi common.Network
 				RemotePort: newSocket.RemotePort,
 			}
 			t.activeSockets[connID] = newSocket
-
+			socket.AcceptChan <- newSocket
 			// Send SYN-ACK
 			err := t.SendTCPPacket(
 				newSocket.LocalAddr,
@@ -288,7 +288,6 @@ func (t *Tcp) HandleTCPPacket(packet *common.IpPacket, networkApi common.Network
 			}
 			socket.State = ESTABLISHED
 			t.StartSocketSending(socket)
-			// go t.StratRetransmitting(socket)
 		}
 
 	case SYN_RECEIVED:
@@ -298,13 +297,8 @@ func (t *Tcp) HandleTCPPacket(packet *common.IpPacket, networkApi common.Network
 			socket.sendBuffer.sndLbw = socket.sendBuffer.sndNxt
 			socket.State = ESTABLISHED
 			fmt.Printf("New connection on socket %d => created new socket %d\n",
-				0, socket.ID)
-
-			if socket.AcceptChan != nil {
-				socket.AcceptChan <- socket
-			}
+				0, socket.ID)		
 			t.StartSocketSending(socket)
-			// go t.StratRetransmitting(socket)
 		}
 
 	case ESTABLISHED:
@@ -395,6 +389,7 @@ func (t *Tcp) SendTCPPacket(sourceIp netip.Addr, sourcePort uint16,
 		Checksum:      0,
 		UrgentPointer: 0,
 	}
+	
 
 	// Compute checksum
 	checksum := tcpUtils.ComputeTCPChecksum(&tcpHdr, sourceIp, destIp, payload)
@@ -584,9 +579,8 @@ func (t *Tcp) handleSending(s *Socket) {
 			s.sendBuffer.condSndWnd.Wait()
 		}
 
-		// Only send up to the window size
 		windowSize := s.sendBuffer.sndWnd
-		segment, err := s.sendBuffer.ReadSegment(uint32(windowSize))
+		segment, err := s.sendBuffer.ReadSegment(uint32(min(windowSize, common.MaxTcpPayload)))
 
 		if err != nil {
 			fmt.Println("Error reading segment from send buffer:", err)
@@ -657,15 +651,18 @@ func (t *Tcp) handleRetransmission(s *Socket) {
 					}
 					segment.RetxCount++
 					segment.LastSent = time.Now()
-					tempRto *= 2
-					if tempRto > MaxRTO{
-						tempRto = MaxRTO
-					}
+					// tempRto *= 2
+					// if tempRto > MaxRTO{
+					// 	tempRto = MaxRTO
+					// }
 					s.sendBuffer.rttStats.mu.Unlock()
 					s.sendBuffer.mutex.Unlock()
 					time.Sleep(tempRto)
 					s.sendBuffer.mutex.Lock()
 					s.sendBuffer.rttStats.mu.Lock()
+					if len(s.sendBuffer.unackedSegments) == 0 || (len(s.sendBuffer.unackedSegments) != 0 && s.sendBuffer.unackedSegments[0] != segment){
+						break
+					} 
 				}
 				// TODO disconnect when fail to retransmit
 			}

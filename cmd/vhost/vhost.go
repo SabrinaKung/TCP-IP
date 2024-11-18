@@ -126,6 +126,10 @@ func runCLI(network *network_layer.NetworkLayer, link *link_layer.LinkLayer) {
 			handleReceive(parts[1:], tcpStack)
 		case "exit", "q":
 			return
+		case "sf":
+			handleSendFile(parts[1:])
+		case "rf":
+			handleReceiveFile(parts[1:])
 		default:
 			fmt.Printf("Invalid command: %s\n"+
 				"Commands: \n"+
@@ -260,14 +264,11 @@ func handleAccept(args []string) {
 
 	// Accept in a goroutine to not block the CLI
 	go func() {
-		newSocket, err := socket.Accept()
+		_, err := socket.Accept()
 		if err != nil {
 			fmt.Printf("Failed to accept: %v\n", err)
 			return
 		}
-		fmt.Printf("New connection on socket %d => created new socket %d\n",
-			socket.ID,
-			newSocket.ID)
 	}()
 }
 
@@ -363,7 +364,7 @@ func handleReceive(args []string, tcp *tcp_layer.Tcp) {
 	fmt.Printf("Read %d bytes: %s\n", len(data), string(data))
 }
 
-func handleSendFile(args []string, tcp *tcp_layer.Tcp) {
+func handleSendFile(args []string) {
 	if len(args) != 3 {
 		fmt.Println("Usage: sf <file path> <addr> <port>")
 		return
@@ -408,11 +409,12 @@ func handleSendFile(args []string, tcp *tcp_layer.Tcp) {
 		written := 0
 		for written < n {
 			w, err := conn.Socket.VWrite(buf[written:n])
+			time.Sleep(20 * time.Millisecond)
 			if w > 0 {
 				written += w
 			}
 			if err != nil {
-				fmt.Printf("Write failed, retrying after delay: %v\n", err)
+				// fmt.Printf("Write failed, retrying after delay: %v\n", err)
 				time.Sleep(100 * time.Millisecond)
 			}
 		}
@@ -421,6 +423,71 @@ func handleSendFile(args []string, tcp *tcp_layer.Tcp) {
 	fmt.Println("File sent successfully.")
 }
 
+func handleReceiveFile(args []string) {
+	if len(args) != 2 {
+		fmt.Println("Usage: sf <filename> <port>")
+		return
+	}
+	port, err := strconv.ParseUint(args[1], 10, 16)
+	if err != nil {
+		fmt.Printf("Invalid port number: %v\n", err)
+		return
+	}
+
+	socket, err := tcpStack.Listen(uint16(port))
+	if err != nil {
+		fmt.Printf("Failed to listen: %v\n", err)
+		return
+	}
+	go func() {
+		newSocket, err := socket.Accept()
+		if err != nil {
+			fmt.Printf("Failed to accept: %v\n", err)
+			return
+		}
+
+		// err = os.MkdirAll(args[0], 0666) 
+		// if err != nil {
+		// 	fmt.Printf("Failed to create directories: %v\n", err)
+		// 	return
+		// }
+		outputFile, err := os.Create(args[0])
+		if err != nil {
+			fmt.Printf("Failed to create file: %v\n", err)
+			return
+		}
+		defer outputFile.Close()
+
+		const readSize = 1024
+		const timeLimit = 1000 * time.Second
+		timeout := time.After(timeLimit)
+		for {
+			select {
+			case <-timeout:
+				fmt.Println("File received and saved successfully.")
+				return
+			default:
+				data, err := newSocket.VRead(readSize)
+				if err != nil {
+					fmt.Printf("Read failed: %v\n", err)
+					return
+				}
+				// Write the received data to the file
+				written := 0
+				for written < len(data) {
+					w, err := outputFile.Write(data[written:])
+					if err != nil {
+						fmt.Printf("Failed to write to file: %v\n", err)
+						return
+					}
+					written += w
+				}
+
+				// fmt.Printf("Wrote %d bytes to file\n", written)
+			}
+		}
+	}()
+}
 func findSocketByID(tcp *tcp_layer.Tcp, socketID int) *tcp_layer.Socket {
 	sockets := tcp.GetSockets()
 	for _, socket := range sockets {
