@@ -156,7 +156,17 @@ func (t *Tcp) Connect(addr netip.Addr, port uint16) (*Connection, error) {
 }
 
 func (s *Socket) Accept() (*Socket, error) {
-	newSocket := <-s.AcceptChan
+	s.stateMutex.Lock()
+	if s.State == CLOSED {
+		s.stateMutex.Unlock()
+	}
+	s.stateMutex.Unlock()
+
+	newSocket, ok := <-s.AcceptChan
+	if !ok {
+		// Channel is closed
+		return nil, fmt.Errorf("Socket %d is closed", s.ID)
+	}
 
 	// Wait for the socket to be fully established
 	timeout := time.After(5 * time.Second)
@@ -169,7 +179,7 @@ func (s *Socket) Accept() (*Socket, error) {
 			newSocket.stateMutex.Lock()
 			if newSocket.State == ESTABLISHED {
 				newSocket.stateMutex.Unlock()
-				fmt.Printf("Accept: returning new established socket %d\n", newSocket.ID)
+				// fmt.Printf("Accept: returning new established socket %d\n", newSocket.ID)
 				return newSocket, nil
 			}
 			newSocket.stateMutex.Unlock()
@@ -239,7 +249,12 @@ func (t *Tcp) HandleTCPPacket(packet *common.IpPacket, networkApi common.Network
 
 		case FIN_WAIT_2:
 			socket.State = TIME_WAIT
+			socket.sendBuffer.mutex.Lock()
+			socket.recvBuffer.mutex.Lock()
 			socket.recvBuffer.rcvNxt = tcpHdr.SeqNum + 1
+			socket.sendBuffer.sndNxt = tcpHdr.AckNum
+			socket.sendBuffer.mutex.Unlock()
+			socket.recvBuffer.mutex.Unlock()
 
 			// Send ACK for FIN
 			err := t.SendTCPPacket(
@@ -347,11 +362,11 @@ func (t *Tcp) HandleTCPPacket(packet *common.IpPacket, networkApi common.Network
 			socket.sendBuffer.sndLbw = socket.sendBuffer.sndNxt
 			socket.State = ESTABLISHED
 			fmt.Printf("New connection on socket %d => created new socket %d\n",
-				0, socket.ID)		
+				0, socket.ID)
 			t.StartSocketSending(socket)
 		}
 
-	case ESTABLISHED:
+	case ESTABLISHED, FIN_WAIT_2, CLOSE_WAIT:
 		// The TCP payload starts after the TCP header
 		tcpPayload := packet.Message[header.TCPMinimumSize:]
 
@@ -362,8 +377,8 @@ func (t *Tcp) HandleTCPPacket(packet *common.IpPacket, networkApi common.Network
 		// Deal with tcp packet with payload
 		if len(tcpPayload) > 0 {
 			rcvSeqNum := uint32(tcpHdr.SeqNum)
-			// fmt.Printf("Received data packet - Payload length: %d, SeqNum: %d\n",
-			// len(tcpPayload), rcvSeqNum)
+			fmt.Printf("Received data packet - Payload length: %d, SeqNum: %d\n",
+				len(tcpPayload), rcvSeqNum)
 
 			segment := &Segment{
 				Data:   tcpPayload,
@@ -439,7 +454,6 @@ func (t *Tcp) SendTCPPacket(sourceIp netip.Addr, sourcePort uint16,
 		Checksum:      0,
 		UrgentPointer: 0,
 	}
-	
 
 	// Compute checksum
 	checksum := tcpUtils.ComputeTCPChecksum(&tcpHdr, sourceIp, destIp, payload)
@@ -554,7 +568,7 @@ func (t *Tcp) GetSockets() []*Socket {
 }
 
 func (t *Tcp) StartSocketSending(s *Socket) {
-	// TODO: add quit gracefully 
+	// TODO: add quit gracefully
 	go t.handleSending(s)        // Handle normal sending
 	go t.handleZeroWndProbing(s) // Handle zero window probing
 	go t.handleRetransmission(s) // Handle retransmission
@@ -673,7 +687,7 @@ func (t *Tcp) handleSending(s *Socket) {
 }
 
 func (t *Tcp) handleRetransmission(s *Socket) {
-	for{
+	for {
 		s.sendBuffer.mutex.Lock()
 		s.sendBuffer.rttStats.mu.Lock()
 		if len(s.sendBuffer.unackedSegments) != 0 {
@@ -681,8 +695,8 @@ func (t *Tcp) handleRetransmission(s *Socket) {
 			elapsed := time.Since(segment.LastSent)
 			if elapsed > s.sendBuffer.rttStats.rto {
 				tempRto := s.sendBuffer.rttStats.rto
-				for segment.RetxCount < MaxTryTime{
-					fmt.Printf("Retransmitting segment %d (elapsed: %v, RTO: %v)\n", 
+				for segment.RetxCount < MaxTryTime {
+					fmt.Printf("Retransmitting segment %d (elapsed: %v, RTO: %v)\n",
 						segment.SeqNum, elapsed, tempRto)
 					s.sendBuffer.mutex.Unlock()
 					err := t.SendTCPPacket(
@@ -710,9 +724,9 @@ func (t *Tcp) handleRetransmission(s *Socket) {
 					time.Sleep(tempRto)
 					s.sendBuffer.mutex.Lock()
 					s.sendBuffer.rttStats.mu.Lock()
-					if len(s.sendBuffer.unackedSegments) == 0 || (len(s.sendBuffer.unackedSegments) != 0 && s.sendBuffer.unackedSegments[0] != segment){
+					if len(s.sendBuffer.unackedSegments) == 0 || (len(s.sendBuffer.unackedSegments) != 0 && s.sendBuffer.unackedSegments[0] != segment) {
 						break
-					} 
+					}
 				}
 				// TODO disconnect when fail to retransmit
 			}
@@ -756,7 +770,18 @@ func (t *Tcp) CloseSocket(socket *Socket) error {
 		socket.sendBuffer.sndNxt++ // FIN consumes one sequence number
 
 	case CLOSE_WAIT:
+		socket.sendBuffer.mutex.Lock()
+		if socket.sendBuffer.sndNxt < socket.sendBuffer.sndLbw {
+			socket.sendBuffer.mutex.Unlock()
+			return fmt.Errorf("cannot close: unsent data remains")
+		}
+		if socket.sendBuffer.sndUna < socket.sendBuffer.sndNxt {
+			socket.sendBuffer.mutex.Unlock()
+			return fmt.Errorf("cannot close: unacknowledged data remains")
+		}
+		socket.sendBuffer.mutex.Unlock()
 		socket.State = LAST_ACK
+
 		err := t.SendTCPPacket(
 			socket.LocalAddr,
 			socket.LocalPort,
@@ -771,10 +796,9 @@ func (t *Tcp) CloseSocket(socket *Socket) error {
 		socket.sendBuffer.sndNxt++ // FIN consumes one sequence number
 
 	case LISTEN:
+		t.removeSocket(socket)
 		socket.State = CLOSED
 		close(socket.AcceptChan)
-		t.removeSocket(socket)
-
 	default:
 		return fmt.Errorf("invalid state for close: %v", socket.State)
 	}
