@@ -129,9 +129,9 @@ func runCLI(network *network_layer.NetworkLayer, link *link_layer.LinkLayer) {
 		case "exit", "q":
 			return
 		case "sf":
-			handleSendFile(parts[1:])
+			handleSendFile(parts[1:], tcpStack)
 		case "rf":
-			handleReceiveFile(parts[1:])
+			handleReceiveFile(parts[1:], tcpStack)
 		default:
 			fmt.Printf("Invalid command: %s\n"+
 				"Commands: \n"+
@@ -366,7 +366,7 @@ func handleReceive(args []string, tcp *tcp_layer.Tcp) {
 	fmt.Printf("Read %d bytes: %s\n", len(data), string(data))
 }
 
-func handleSendFile(args []string) {
+func handleSendFile(args []string, tcp *tcp_layer.Tcp) {
 	if len(args) != 3 {
 		fmt.Println("Usage: sf <file path> <addr> <port>")
 		return
@@ -389,7 +389,7 @@ func handleSendFile(args []string) {
 		fmt.Printf("Failed to connect: %v\n", err)
 		return
 	}
-	// defer conn.close()
+
 	file, err := os.Open(args[0])
 	if err != nil {
 		fmt.Printf("Failed to open file: %v\n", err)
@@ -423,9 +423,20 @@ func handleSendFile(args []string) {
 		fmt.Printf("Wrote %d bytes\n", written)
 	}
 	fmt.Println("File sent successfully.")
+	time.Sleep(10 * time.Second)
+	for {
+		err := tcp.CloseSocket(conn.Socket)
+		if  err == nil{
+			fmt.Println("conncetion closed")
+			break
+		}else {
+			fmt.Println(err)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 }
 
-func handleReceiveFile(args []string) {
+func handleReceiveFile(args []string, tcp *tcp_layer.Tcp) {
 	if len(args) != 2 {
 		fmt.Println("Usage: sf <filename> <port>")
 		return
@@ -461,33 +472,36 @@ func handleReceiveFile(args []string) {
 		defer outputFile.Close()
 
 		const readSize = 1024
-		const timeLimit = 1000 * time.Second
-		timeout := time.After(timeLimit)
 		for {
-			select {
-			case <-timeout:
-				fmt.Println("File received and saved successfully.")
+			// socket.StateMutex.Lock()
+			// if socket.State == tcp_layer.CLOSE_WAIT{
+			// 	fmt.Println("Reached EOF")
+			// 	socket.StateMutex.Unlock()
+			// 	break
+			// }
+			// socket.StateMutex.Unlock()
+			data, err := newSocket.VRead(readSize)
+			if err != nil {
+				if err == io.EOF{
+					fmt.Println("Reached EOF")
+					break
+				}
+				fmt.Printf("Read failed: %v\n", err)
 				return
-			default:
-				data, err := newSocket.VRead(readSize)
+			}
+			// Write the received data to the file
+			written := 0
+			for written < len(data) {
+				w, err := outputFile.Write(data[written:])
 				if err != nil {
-					fmt.Printf("Read failed: %v\n", err)
+					fmt.Printf("Failed to write to file: %v\n", err)
 					return
 				}
-				// Write the received data to the file
-				written := 0
-				for written < len(data) {
-					w, err := outputFile.Write(data[written:])
-					if err != nil {
-						fmt.Printf("Failed to write to file: %v\n", err)
-						return
-					}
-					written += w
-				}
-
-				// fmt.Printf("Wrote %d bytes to file\n", written)
+				written += w
 			}
+			// fmt.Printf("Wrote %d bytes to file\n", written)
 		}
+		tcp.CloseSocket(newSocket)
 	}()
 }
 func findSocketByID(tcp *tcp_layer.Tcp, socketID int) *tcp_layer.Socket {
@@ -521,7 +535,7 @@ func handleClose(args []string, tcp *tcp_layer.Tcp) {
 	}
 
 	// Initiate close
-	err = socket.VClose()
+	err = tcp.CloseSocket(socket)
 	if err != nil {
 		fmt.Printf("Close error: %v\n", err)
 	}

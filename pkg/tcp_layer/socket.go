@@ -2,6 +2,7 @@ package tcp_layer
 
 import (
 	"fmt"
+	"io"
 	"net/netip"
 	"sync"
 	"time"
@@ -24,11 +25,11 @@ const (
 
 const (
 	InitialProbeTimeout = 1 * time.Second  // Initial probe timeout (RTO)
-	MaxProbeTimeout     = 60 * time.Second // Maximum probe timeout
+	MaxProbeTimeout     = 10 * time.Second // Maximum probe timeout
 )
 
 const (
-	MSL = 1 * time.Minute // Maximum Segment Lifetime
+	MSL = 15 // Maximum Segment Lifetime
 )
 
 func (s TCPState) String() string {
@@ -69,7 +70,7 @@ type Socket struct {
 
 	// State management
 	State      TCPState
-	stateMutex sync.Mutex
+	StateMutex sync.Mutex
 
 	// Channel for accepting new connections (for listener sockets)
 	AcceptChan chan *Socket
@@ -78,7 +79,6 @@ type Socket struct {
 	sendBuffer *SendBuffer
 	recvBuffer *ReceiveBuffer
 
-	closeFunc func(*Socket) error
 }
 
 func (s *Socket) VWrite(data []byte) (int, error) {
@@ -105,13 +105,13 @@ func (s *Socket) VRead(n int) ([]byte, error) {
 	if s.State == FIN_WAIT_1 || s.State == FIN_WAIT_2 || s.State == TIME_WAIT {
 		return nil, fmt.Errorf("operation not permitted")
 	} else if s.State == CLOSE_WAIT {
-		return nil, fmt.Errorf("EOF")
+		return nil, io.EOF
 	}
 	if s.State != ESTABLISHED {
 		return nil, fmt.Errorf("socket not connected")
 	}
 
-	data, err := s.recvBuffer.Read(n)
+	data, err := s.recvBuffer.Read(n, s)
 	if err != nil {
 		return nil, err
 	}
@@ -119,9 +119,9 @@ func (s *Socket) VRead(n int) ([]byte, error) {
 	return data, nil
 }
 
-func (s *Socket) VClose() error {
-	if s.closeFunc == nil {
-		return fmt.Errorf("close function not set")
-	}
-	return s.closeFunc(s)
-}
+// func (s *Socket) VClose() error {
+// 	if s.closeFunc == nil {
+// 		return fmt.Errorf("close function not set")
+// 	}
+// 	return s.closeFunc(s)
+// }

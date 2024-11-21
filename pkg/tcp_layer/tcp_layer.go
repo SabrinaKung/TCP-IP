@@ -79,7 +79,6 @@ func (t *Tcp) Listen(port uint16) (*Socket, error) {
 		AcceptChan: make(chan *Socket),
 		sendBuffer: NewSendBuffer(isn),
 		recvBuffer: NewReceiveBuffer(0),
-		closeFunc:  t.CloseSocket,
 	}
 
 	t.listenSockets[port] = socket
@@ -104,7 +103,6 @@ func (t *Tcp) Connect(addr netip.Addr, port uint16) (*Connection, error) {
 		State:      SYN_SENT,
 		sendBuffer: NewSendBuffer(isn),
 		recvBuffer: NewReceiveBuffer(0),
-		closeFunc:  t.CloseSocket,
 	}
 
 	// Create connection ID
@@ -142,12 +140,12 @@ func (t *Tcp) Connect(addr netip.Addr, port uint16) (*Connection, error) {
 	for {
 		select {
 		case <-ticker.C:
-			socket.stateMutex.Lock()
+			socket.StateMutex.Lock()
 			if socket.State == ESTABLISHED {
-				socket.stateMutex.Unlock()
+				socket.StateMutex.Unlock()
 				return &Connection{Socket: socket}, nil
 			}
-			socket.stateMutex.Unlock()
+			socket.StateMutex.Unlock()
 		case <-timeout:
 			t.removeSocket(socket) // Clean up on timeout
 			return nil, fmt.Errorf("connection timeout")
@@ -156,11 +154,11 @@ func (t *Tcp) Connect(addr netip.Addr, port uint16) (*Connection, error) {
 }
 
 func (s *Socket) Accept() (*Socket, error) {
-	s.stateMutex.Lock()
+	s.StateMutex.Lock()
 	if s.State == CLOSED {
-		s.stateMutex.Unlock()
+		s.StateMutex.Unlock()
 	}
-	s.stateMutex.Unlock()
+	s.StateMutex.Unlock()
 
 	newSocket, ok := <-s.AcceptChan
 	if !ok {
@@ -176,13 +174,13 @@ func (s *Socket) Accept() (*Socket, error) {
 	for {
 		select {
 		case <-ticker.C:
-			newSocket.stateMutex.Lock()
+			newSocket.StateMutex.Lock()
 			if newSocket.State == ESTABLISHED {
-				newSocket.stateMutex.Unlock()
+				newSocket.StateMutex.Unlock()
 				// fmt.Printf("Accept: returning new established socket %d\n", newSocket.ID)
 				return newSocket, nil
 			}
-			newSocket.stateMutex.Unlock()
+			newSocket.StateMutex.Unlock()
 		case <-timeout:
 			return nil, fmt.Errorf("accept timeout waiting for connection to establish")
 		}
@@ -211,8 +209,8 @@ func (t *Tcp) HandleTCPPacket(packet *common.IpPacket, networkApi common.Network
 		return fmt.Errorf("no socket found for packet")
 	}
 
-	socket.stateMutex.Lock()
-	defer socket.stateMutex.Unlock()
+	socket.StateMutex.Lock()
+	defer socket.StateMutex.Unlock()
 
 	// Handle received ACK for FIN
 	if tcpHdr.Flags&header.TCPFlagAck != 0 {
@@ -234,6 +232,7 @@ func (t *Tcp) HandleTCPPacket(packet *common.IpPacket, networkApi common.Network
 		case ESTABLISHED:
 			socket.State = CLOSE_WAIT
 			socket.recvBuffer.rcvNxt++ // Account for the FIN
+			socket.recvBuffer.condEmpty.Signal() // notify read ends 
 			// Send ACK for FIN
 			err := t.SendTCPPacket(
 				socket.LocalAddr,
@@ -272,9 +271,9 @@ func (t *Tcp) HandleTCPPacket(packet *common.IpPacket, networkApi common.Network
 			// Start TIME_WAIT timer
 			go func() {
 				time.Sleep(2 * MSL)
-				socket.stateMutex.Lock()
+				socket.StateMutex.Lock()
 				socket.State = CLOSED
-				socket.stateMutex.Unlock()
+				socket.StateMutex.Unlock()
 				t.removeSocket(socket)
 				fmt.Printf("Socket %d closed\n", socket.ID)
 			}()
@@ -292,7 +291,6 @@ func (t *Tcp) HandleTCPPacket(packet *common.IpPacket, networkApi common.Network
 				RemoteAddr: packet.Header.Src,
 				RemotePort: uint16(tcpHdr.SrcPort),
 				State:      SYN_RECEIVED,
-				closeFunc:  t.CloseSocket,
 			}
 
 			// Initialize send buffer with a new ISN
@@ -716,7 +714,7 @@ func (t *Tcp) handleRetransmission(s *Socket) {
 					segment.RetxCount++
 					segment.LastSent = time.Now()
 					// tempRto *= 2
-					// if tempRto > MaxRTO{
+					// if tempRto > MaxRTO {
 					// 	tempRto = MaxRTO
 					// }
 					s.sendBuffer.rttStats.mu.Unlock()
@@ -738,8 +736,8 @@ func (t *Tcp) handleRetransmission(s *Socket) {
 }
 
 func (t *Tcp) CloseSocket(socket *Socket) error {
-	socket.stateMutex.Lock()
-	defer socket.stateMutex.Unlock()
+	socket.StateMutex.Lock()
+	defer socket.StateMutex.Unlock()
 
 	switch socket.State {
 	case ESTABLISHED:

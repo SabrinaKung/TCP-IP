@@ -267,11 +267,11 @@ func (rb *ReceiveBuffer) ProcessSegment(segment *Segment) error {
 	return nil
 }
 
-func (rb *ReceiveBuffer) Read(n int) ([]byte, error) {
+func (rb *ReceiveBuffer) Read(n int, socket *Socket) ([]byte, error) {
 	rb.mutex.Lock()
 	defer rb.mutex.Unlock()
 
-	for len(rb.buffer) == 0 {
+	for len(rb.buffer) == 0 && socket.State == ESTABLISHED{
 		rb.condEmpty.Wait()
 	}
 	readLen := n
