@@ -231,8 +231,8 @@ func (t *Tcp) HandleTCPPacket(packet *common.IpPacket, networkApi common.Network
 		switch socket.State {
 		case ESTABLISHED:
 			socket.State = CLOSE_WAIT
-			socket.recvBuffer.rcvNxt++ // Account for the FIN
-			socket.recvBuffer.condEmpty.Signal() // notify read ends 
+			socket.recvBuffer.rcvNxt++           // Account for the FIN
+			socket.recvBuffer.condEmpty.Signal() // notify read ends
 			// Send ACK for FIN
 			err := t.SendTCPPacket(
 				socket.LocalAddr,
@@ -713,10 +713,6 @@ func (t *Tcp) handleRetransmission(s *Socket) {
 					}
 					segment.RetxCount++
 					segment.LastSent = time.Now()
-					// tempRto *= 2
-					// if tempRto > MaxRTO {
-					// 	tempRto = MaxRTO
-					// }
 					s.sendBuffer.rttStats.mu.Unlock()
 					s.sendBuffer.mutex.Unlock()
 					time.Sleep(tempRto)
@@ -726,7 +722,35 @@ func (t *Tcp) handleRetransmission(s *Socket) {
 						break
 					}
 				}
-				// TODO disconnect when fail to retransmit
+				// Handle maximum retransmission failure
+				if segment.RetxCount >= MaxTryTime &&
+					len(s.sendBuffer.unackedSegments) > 0 &&
+					s.sendBuffer.unackedSegments[0] == segment {
+					fmt.Printf("Maximum retransmission attempts (%d) reached for segment %d. Initiating connection termination.\n",
+						MaxTryTime, segment.SeqNum)
+
+					// Release locks before initiating connection termination
+					s.sendBuffer.rttStats.mu.Unlock()
+					s.sendBuffer.mutex.Unlock()
+
+					// Acquire state mutex for state transition
+					s.StateMutex.Lock()
+					if s.State == ESTABLISHED {
+						s.State = CLOSED
+						fmt.Printf("Connection terminated due to retransmission failure.\nSocket %d closed.\n", s.ID)
+
+						// Clean up connection resources
+						go func() {
+							t.removeSocket(s)
+							// Close accept channel if it exists
+							if s.AcceptChan != nil {
+								close(s.AcceptChan)
+							}
+						}()
+					}
+					s.StateMutex.Unlock()
+					return // Exit the retransmission goroutine
+				}
 			}
 		}
 		s.sendBuffer.rttStats.mu.Unlock()
