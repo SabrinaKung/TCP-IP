@@ -76,7 +76,6 @@ Once running, both vhost and vrouter provide a command-line interface with the f
 - The forwarding table is dynamically updated based on received RIP messages in vrouter.
 
 
-
 # IP Stack APIs Implementation
 
 ## Answers to Key Questions
@@ -116,3 +115,88 @@ Since the `NetworkLayer` and `LinkLayer` need to call each other’s API functio
 ### 2. Atomic Integer Usage
 
 After careful consideration, I decided to use atomic integers for the `lifetime` field in the forwarding table entries. By doing this, there's no need to lock the forwarding table. While multiple interfaces may modify the forwarding table concurrently, they will never modify the same entry simultaneously. This is because each prefix has only one exit interface, preventing race conditions.
+
+# TCP Stack
+
+## 1. Top-Level Connection Management:
+Tcp struct acts as the connection manager, maintaining:
+
+- `listenSockets`: Map of ports to listening sockets
+- `activeSockets`: Map of ConnectionIDs to established connections
+- Each connection is uniquely identified by a ConnectionID containing both endpoints (local/remote IP:port pairs)
+
+## 2. Individual Connection State (Socket struct):
+
+- Core connection identifiers (IPs and ports)
+- State machine management (LISTEN, ESTABLISHED, etc.) with mutex protection
+- Contains the key buffers that handle data flow
+
+## 3. Data Flow Management:
+
+- SendBuffer: Handles outbound data with:
+   - Circular buffer for data storage
+   - Sequence number tracking (sndUna, sndNxt, sndWnd)
+   - unackedSegments: Queue of unacknowledged segments for retransmission
+   - Window size management for flow control
+   - RTT statistics for timeout calculations
+
+- ReceiveBuffer: Handles inbound data with:
+   - Buffer for ordered data delivery
+   - Next expected sequence number (rcvNxt)
+   - Window size management
+   - oooSegments: Queue for out-of-order segments
+
+
+## 4. Reliability Features:
+
+- RTTStats: Manages RTT estimation and RTO calculation with:
+   - Smoothed RTT
+   - RTT variation
+   - Current RTO value
+- Segment: Represents a TCP segment with:
+   - Sequence number
+   - Retransmission count
+   - Last transmission timestamp
+   - Acknowledgment status
+
+## 5. Key Data Structures for Retransmission:
+
+### 5.1 Segment Tracking
+```
+type Segment struct {
+    Data      []byte
+    SeqNum    uint32
+    RetxCount int       // Number of retransmissions tried
+    LastSent  time.Time // Last transmission timestamp
+    Acked     bool
+}
+```
+
+### 5.2 In SendBuffer
+```
+type SendBuffer struct {
+    unackedSegments []*Segment  // Queue of segments waiting for ACK
+    rttStats        RTTStats    // For RTO calculation
+}
+```
+
+### 5.3 RTT Management
+```
+type RTTStats struct {
+    srtt   time.Duration // Smoothed round-trip time
+    rttvar time.Duration // RTT variation
+    rto    time.Duration // Current retransmission timeout
+}
+```
+The retransmission logic:
+- `unackedSegments` queue tracks segments that haven't been acknowledged yet
+- Each segment tracks its retransmission count (up to MaxTryTime = 10)
+- The RTT stats determine how long to wait before retransmitting (RTO)
+- The system uses Karn's algorithm (only updating RTT for segments that weren't retransmitted)
+
+When retransmission is needed:
+
+1. Takes the oldest unacked segment from the queue
+2. Checks if RTO has elapsed since LastSent
+3. If yes, retransmits and increments RetxCount
+4. If RetxCount exceeds MaxTryTime, terminates the connection
