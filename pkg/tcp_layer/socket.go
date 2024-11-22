@@ -29,7 +29,7 @@ const (
 )
 
 const (
-	MSL = 15 // Maximum Segment Lifetime
+	MSL = 15 * time.Second // Maximum Segment Lifetime
 )
 
 func (s TCPState) String() string {
@@ -78,7 +78,6 @@ type Socket struct {
 	// Buffer management
 	sendBuffer *SendBuffer
 	recvBuffer *ReceiveBuffer
-
 }
 
 func (s *Socket) VWrite(data []byte) (int, error) {
@@ -118,10 +117,3 @@ func (s *Socket) VRead(n int) ([]byte, error) {
 
 	return data, nil
 }
-
-// func (s *Socket) VClose() error {
-// 	if s.closeFunc == nil {
-// 		return fmt.Errorf("close function not set")
-// 	}
-// 	return s.closeFunc(s)
-// }

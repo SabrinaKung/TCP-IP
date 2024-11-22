@@ -76,7 +76,7 @@ func (t *Tcp) Listen(port uint16) (*Socket, error) {
 		RemoteAddr: netip.IPv4Unspecified(), // Use 0.0.0.0
 		RemotePort: 0,
 		State:      LISTEN,
-		AcceptChan: make(chan *Socket),
+		AcceptChan: make(chan *Socket, 10),
 		sendBuffer: NewSendBuffer(isn),
 		recvBuffer: NewReceiveBuffer(0),
 	}
@@ -229,10 +229,10 @@ func (t *Tcp) HandleTCPPacket(packet *common.IpPacket, networkApi common.Network
 	// Handle received FIN
 	if tcpHdr.Flags&header.TCPFlagFin != 0 {
 		switch socket.State {
-		case ESTABLISHED:
+		case ESTABLISHED, CLOSE_WAIT:
 			socket.State = CLOSE_WAIT
-			socket.recvBuffer.rcvNxt++           // Account for the FIN
-			socket.recvBuffer.condEmpty.Signal() // notify read ends
+			socket.recvBuffer.rcvNxt = tcpHdr.SeqNum + 1 // Account for the FIN
+			socket.recvBuffer.condEmpty.Signal()         // notify read ends
 			// Send ACK for FIN
 			err := t.SendTCPPacket(
 				socket.LocalAddr,
@@ -765,62 +765,202 @@ func (t *Tcp) CloseSocket(socket *Socket) error {
 
 	switch socket.State {
 	case ESTABLISHED:
-		// Make sure all data is sent and acknowledged
-		socket.sendBuffer.mutex.Lock()
-		if socket.sendBuffer.sndNxt < socket.sendBuffer.sndLbw {
-			socket.sendBuffer.mutex.Unlock()
-			return fmt.Errorf("cannot close: unsent data remains")
-		}
-		if socket.sendBuffer.sndUna < socket.sendBuffer.sndNxt {
-			socket.sendBuffer.mutex.Unlock()
-			return fmt.Errorf("cannot close: unacknowledged data remains")
-		}
-		socket.sendBuffer.mutex.Unlock()
-
 		socket.State = FIN_WAIT_1
-		err := t.SendTCPPacket(
-			socket.LocalAddr,
-			socket.LocalPort,
-			socket.RemoteAddr,
-			socket.RemotePort,
-			[]byte{},
-			header.TCPFlagFin|header.TCPFlagAck,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to send FIN+ACK: %v", err)
-		}
-		socket.sendBuffer.sndNxt++ // FIN consumes one sequence number
+
+		go func() {
+			retryCount := 0
+			finSeqNum := socket.sendBuffer.sndNxt
+
+			// Initial FIN+ACK
+			err := t.SendTCPPacket(
+				socket.LocalAddr,
+				socket.LocalPort,
+				socket.RemoteAddr,
+				socket.RemotePort,
+				[]byte{},
+				header.TCPFlagFin|header.TCPFlagAck,
+			)
+			if err != nil {
+				fmt.Printf("Failed to send initial FIN+ACK: %v\n", err)
+			}
+			socket.sendBuffer.sndNxt++ // FIN consumes one sequence number
+
+			for retryCount < MaxTryTime {
+				// Quick check before waiting
+				socket.sendBuffer.mutex.Lock()
+				finAcked := socket.sendBuffer.sndUna > finSeqNum
+				socket.sendBuffer.mutex.Unlock()
+
+				socket.StateMutex.Lock()
+				currentState := socket.State
+				socket.StateMutex.Unlock()
+
+				if currentState != FIN_WAIT_1 || finAcked {
+					fmt.Printf("FIN acknowledged or state changed (State: %s, Acked: %v), stopping retransmission\n",
+						currentState, finAcked)
+					return
+				}
+
+				// Set up a channel for immediate ACK notification
+				ackChan := make(chan struct{})
+				finAckChecker := func() {
+					ticker := time.NewTicker(10 * time.Millisecond) // frequent checks
+					defer ticker.Stop()
+
+					for range ticker.C {
+						socket.sendBuffer.mutex.Lock()
+						finAcked := socket.sendBuffer.sndUna > finSeqNum
+						socket.sendBuffer.mutex.Unlock()
+
+						socket.StateMutex.Lock()
+						currentState := socket.State
+						socket.StateMutex.Unlock()
+
+						if currentState != FIN_WAIT_1 || finAcked {
+							close(ackChan)
+							return
+						}
+					}
+				}
+				go finAckChecker()
+
+				// Wait for either timeout or ACK
+				select {
+				case <-time.After(socket.sendBuffer.rttStats.rto):
+					retryCount++
+					if retryCount >= MaxTryTime {
+						socket.StateMutex.Lock()
+						socket.State = CLOSED
+						socket.StateMutex.Unlock()
+						t.removeSocket(socket)
+						fmt.Printf("Connection terminated after max FIN retransmissions\n")
+						return
+					}
+
+					fmt.Printf("Retransmitting FIN+ACK, attempt %d\n", retryCount)
+					// Sleep before retransmit
+					time.Sleep(2 * time.Second)
+
+					err := t.SendTCPPacket(
+						socket.LocalAddr,
+						socket.LocalPort,
+						socket.RemoteAddr,
+						socket.RemotePort,
+						[]byte{},
+						header.TCPFlagFin|header.TCPFlagAck,
+						finSeqNum,
+					)
+					if err != nil {
+						fmt.Printf("Failed to retransmit FIN+ACK: %v\n", err)
+					}
+
+				case <-ackChan:
+					fmt.Printf("ACK received, stopping FIN retransmission immediately\n")
+					return
+				}
+			}
+		}()
 
 	case CLOSE_WAIT:
-		socket.sendBuffer.mutex.Lock()
-		if socket.sendBuffer.sndNxt < socket.sendBuffer.sndLbw {
-			socket.sendBuffer.mutex.Unlock()
-			return fmt.Errorf("cannot close: unsent data remains")
-		}
-		if socket.sendBuffer.sndUna < socket.sendBuffer.sndNxt {
-			socket.sendBuffer.mutex.Unlock()
-			return fmt.Errorf("cannot close: unacknowledged data remains")
-		}
-		socket.sendBuffer.mutex.Unlock()
 		socket.State = LAST_ACK
 
-		err := t.SendTCPPacket(
-			socket.LocalAddr,
-			socket.LocalPort,
-			socket.RemoteAddr,
-			socket.RemotePort,
-			[]byte{},
-			header.TCPFlagFin|header.TCPFlagAck,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to send FIN: %v", err)
-		}
-		socket.sendBuffer.sndNxt++ // FIN consumes one sequence number
+		go func() {
+			retryCount := 0
+			finSeqNum := socket.sendBuffer.sndNxt
+
+			// Initial FIN+ACK
+			err := t.SendTCPPacket(
+				socket.LocalAddr,
+				socket.LocalPort,
+				socket.RemoteAddr,
+				socket.RemotePort,
+				[]byte{},
+				header.TCPFlagFin|header.TCPFlagAck,
+			)
+			if err != nil {
+				fmt.Printf("Failed to send initial FIN+ACK: %v\n", err)
+			}
+			socket.sendBuffer.sndNxt++ // FIN consumes one sequence number
+
+			for retryCount < MaxTryTime {
+				// Quick check before waiting
+				socket.sendBuffer.mutex.Lock()
+				finAcked := socket.sendBuffer.sndUna > finSeqNum
+				socket.sendBuffer.mutex.Unlock()
+
+				socket.StateMutex.Lock()
+				currentState := socket.State
+				socket.StateMutex.Unlock()
+
+				if currentState == CLOSED || finAcked {
+					fmt.Printf("FIN acknowledged or state changed (State: %s, Acked: %v), stopping retransmission\n",
+						currentState, finAcked)
+					return
+				}
+
+				// Set up a channel for immediate ACK notification
+				ackChan := make(chan struct{})
+				go func() {
+					ticker := time.NewTicker(10 * time.Millisecond)
+					defer ticker.Stop()
+
+					for range ticker.C {
+						socket.sendBuffer.mutex.Lock()
+						finAcked := socket.sendBuffer.sndUna > finSeqNum
+						socket.sendBuffer.mutex.Unlock()
+
+						socket.StateMutex.Lock()
+						currentState := socket.State
+						socket.StateMutex.Unlock()
+
+						if currentState == CLOSED || finAcked {
+							close(ackChan)
+							return
+						}
+					}
+				}()
+
+				// Wait for either timeout or ACK
+				select {
+				case <-time.After(socket.sendBuffer.rttStats.rto):
+					retryCount++
+					if retryCount >= MaxTryTime {
+						socket.StateMutex.Lock()
+						socket.State = CLOSED
+						socket.StateMutex.Unlock()
+						t.removeSocket(socket)
+						fmt.Printf("Connection terminated after max FIN retransmissions\n")
+						return
+					}
+
+					fmt.Printf("Retransmitting FIN+ACK from LAST_ACK state, attempt %d\n", retryCount)
+					time.Sleep(2 * time.Second)
+
+					err := t.SendTCPPacket(
+						socket.LocalAddr,
+						socket.LocalPort,
+						socket.RemoteAddr,
+						socket.RemotePort,
+						[]byte{},
+						header.TCPFlagFin|header.TCPFlagAck,
+						finSeqNum,
+					)
+					if err != nil {
+						fmt.Printf("Failed to retransmit FIN+ACK: %v\n", err)
+					}
+
+				case <-ackChan:
+					fmt.Printf("ACK received in LAST_ACK state, stopping FIN retransmission immediately\n")
+					return
+				}
+			}
+		}()
 
 	case LISTEN:
 		t.removeSocket(socket)
 		socket.State = CLOSED
 		close(socket.AcceptChan)
+
 	default:
 		return fmt.Errorf("invalid state for close: %v", socket.State)
 	}
