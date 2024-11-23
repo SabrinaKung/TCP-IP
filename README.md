@@ -200,3 +200,17 @@ When retransmission is needed:
 2. Checks if RTO has elapsed since LastSent
 3. If yes, retransmits and increments RetxCount
 4. If RetxCount exceeds MaxTryTime, terminates the connection
+
+
+## Packet capture
+- The 3-way handshake: pkt1, 4, 5
+  <img width="1422" alt="The 3-way handshake" src="https://github.com/user-attachments/assets/52d9cb56-3581-44c3-b309-af89e103a8ad">
+- One segment sent and acknowledged: pkt 15 & 18
+  <img width="1418" alt="One segment sent and acknowledged" src="https://github.com/user-attachments/assets/c1e958ca-525e-47db-b6ba-e54af78677c2">
+- One segment that is retransmitted: pkt 649
+  <img width="1398" alt="One segment that is retransmitted" src="https://github.com/user-attachments/assets/8ad2f774-9bf0-4f7e-8df1-cb9bad695cbf">
+- Connection teardown: pkt 3081, 3084, 3086, 3087
+   <img width="1152" alt="Connection teardown" src="https://github.com/user-attachments/assets/493b3165-1914-43f4-a130-d23ebe963cdd">
+
+
+  
