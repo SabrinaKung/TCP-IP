@@ -411,25 +411,24 @@ func handleSendFile(args []string, tcp *tcp_layer.Tcp) {
 		written := 0
 		for written < n {
 			w, err := conn.Socket.VWrite(buf[written:n])
-			time.Sleep(20 * time.Millisecond)
 			if w > 0 {
 				written += w
 			}
 			if err != nil {
 				// fmt.Printf("Write failed, retrying after delay: %v\n", err)
-				time.Sleep(100 * time.Millisecond)
+				time.Sleep(10 * time.Millisecond)
 			}
 		}
-		fmt.Printf("Wrote %d bytes\n", written)
+		// fmt.Printf("Wrote %d bytes\n", written)
 	}
 	fmt.Println("File sent successfully.")
 	time.Sleep(10 * time.Second)
 	for {
 		err := tcp.CloseSocket(conn.Socket)
-		if  err == nil{
-			fmt.Println("conncetion closed")
+		if err == nil {
+			fmt.Println("Closing connection")
 			break
-		}else {
+		} else {
 			fmt.Println(err)
 		}
 		time.Sleep(200 * time.Millisecond)
@@ -459,7 +458,7 @@ func handleReceiveFile(args []string, tcp *tcp_layer.Tcp) {
 			return
 		}
 
-		// err = os.MkdirAll(args[0], 0666) 
+		// err = os.MkdirAll(args[0], 0666)
 		// if err != nil {
 		// 	fmt.Printf("Failed to create directories: %v\n", err)
 		// 	return
@@ -473,17 +472,10 @@ func handleReceiveFile(args []string, tcp *tcp_layer.Tcp) {
 
 		const readSize = 1024
 		for {
-			// socket.StateMutex.Lock()
-			// if socket.State == tcp_layer.CLOSE_WAIT{
-			// 	fmt.Println("Reached EOF")
-			// 	socket.StateMutex.Unlock()
-			// 	break
-			// }
-			// socket.StateMutex.Unlock()
 			data, err := newSocket.VRead(readSize)
 			if err != nil {
-				if err == io.EOF{
-					fmt.Println("Reached EOF")
+				if err == io.EOF {
+					// fmt.Println("Reached EOF")
 					break
 				}
 				fmt.Printf("Read failed: %v\n", err)

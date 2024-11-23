@@ -83,10 +83,10 @@ func (sb *SendBuffer) Write(data []byte) (int, error) {
 
 	writeLen := uint32(len(data))
 	if writeLen > available {
-		fmt.Printf("Discard %d bytes.\n", writeLen-available)
+		// fmt.Printf("Discard %d bytes.\n", writeLen-available)
 		writeLen = available
 	}
-	fmt.Printf("%d bytes have been written to buffer!\n", writeLen)
+	// fmt.Printf("%d bytes have been written to buffer!\n", writeLen)
 
 	start := sb.sndLbw % uint32(len(sb.buffer))
 	end := (start + writeLen) % uint32(len(sb.buffer))
@@ -225,8 +225,8 @@ func (rb *ReceiveBuffer) ProcessSegment(segment *Segment) error {
 
 	// If this is the next expected segment
 	if segment.SeqNum == rb.rcvNxt {
-		fmt.Printf("Processing in-order segment, SeqNum: %d, Length: %d, Available Window: %d\n",
-			segment.SeqNum, len(segment.Data), availableWindow)
+		// fmt.Printf("Processing in-order segment, SeqNum: %d, Length: %d, Available Window: %d\n",
+		// segment.SeqNum, len(segment.Data), availableWindow)
 
 		if availableWindow > 0 {
 			// Calculate how much data we can accept
@@ -256,8 +256,8 @@ func (rb *ReceiveBuffer) ProcessSegment(segment *Segment) error {
 
 	// Handle out-of-order segment
 	if segment.SeqNum > rb.rcvNxt {
-		fmt.Printf("Buffering out-of-order segment, Expected: %d, Got: %d\n",
-			rb.rcvNxt, segment.SeqNum)
+		// fmt.Printf("Buffering out-of-order segment, Expected: %d, Got: %d\n",
+		// 	rb.rcvNxt, segment.SeqNum)
 
 		// Only buffer if we have window space
 		if availableWindow > 0 {
@@ -306,7 +306,7 @@ func (rb *ReceiveBuffer) bufferSegment(segment *Segment) {
 
 func (rb *ReceiveBuffer) processBufferedSegments() {
 	for len(rb.oooSegments) > 0 {
-		fmt.Printf("processBufferedSegments in oooSegments\n")
+		// fmt.Printf("processBufferedSegments in oooSegments\n")
 		segment := rb.oooSegments[0]
 		if segment.SeqNum != rb.rcvNxt {
 			break

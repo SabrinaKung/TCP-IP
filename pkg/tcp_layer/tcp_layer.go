@@ -375,8 +375,8 @@ func (t *Tcp) HandleTCPPacket(packet *common.IpPacket, networkApi common.Network
 		// Deal with tcp packet with payload
 		if len(tcpPayload) > 0 {
 			rcvSeqNum := uint32(tcpHdr.SeqNum)
-			fmt.Printf("Received data packet - Payload length: %d, SeqNum: %d\n",
-				len(tcpPayload), rcvSeqNum)
+			// fmt.Printf("Received data packet - Payload length: %d, SeqNum: %d\n",
+			// 	len(tcpPayload), rcvSeqNum)
 
 			segment := &Segment{
 				Data:   tcpPayload,
@@ -676,11 +676,11 @@ func (t *Tcp) handleSending(s *Socket) {
 		}
 		s.sendBuffer.sndNxt += uint32(len(segment.Data))
 
-		fmt.Printf("Sent %d bytes\n", len(segment.Data))
+		// fmt.Printf("Sent %d bytes\n", len(segment.Data))
 
 		// Wait for ACK before sending more data
 		// This ensures we respect flow control
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -694,8 +694,8 @@ func (t *Tcp) handleRetransmission(s *Socket) {
 			if elapsed > s.sendBuffer.rttStats.rto {
 				tempRto := s.sendBuffer.rttStats.rto
 				for segment.RetxCount < MaxTryTime {
-					fmt.Printf("Retransmitting segment %d (elapsed: %v, RTO: %v)\n",
-						segment.SeqNum, elapsed, tempRto)
+					// fmt.Printf("Retransmitting segment %d (elapsed: %v, RTO: %v)\n",
+					// 	segment.SeqNum, elapsed, tempRto)
 					s.sendBuffer.mutex.Unlock()
 					err := t.SendTCPPacket(
 						s.LocalAddr,
@@ -796,8 +796,8 @@ func (t *Tcp) CloseSocket(socket *Socket) error {
 				socket.StateMutex.Unlock()
 
 				if currentState != FIN_WAIT_1 || finAcked {
-					fmt.Printf("FIN acknowledged or state changed (State: %s, Acked: %v), stopping retransmission\n",
-						currentState, finAcked)
+					// fmt.Printf("FIN acknowledged or state changed (State: %s, Acked: %v), stopping retransmission\n",
+					// 	currentState, finAcked)
 					return
 				}
 
@@ -837,7 +837,7 @@ func (t *Tcp) CloseSocket(socket *Socket) error {
 						return
 					}
 
-					fmt.Printf("Retransmitting FIN+ACK, attempt %d\n", retryCount)
+					// fmt.Printf("Retransmitting FIN+ACK, attempt %d\n", retryCount)
 					// Sleep before retransmit
 					time.Sleep(2 * time.Second)
 
@@ -855,7 +855,7 @@ func (t *Tcp) CloseSocket(socket *Socket) error {
 					}
 
 				case <-ackChan:
-					fmt.Printf("ACK received, stopping FIN retransmission immediately\n")
+					// fmt.Printf("ACK received, stopping FIN retransmission immediately\n")
 					return
 				}
 			}
@@ -893,8 +893,8 @@ func (t *Tcp) CloseSocket(socket *Socket) error {
 				socket.StateMutex.Unlock()
 
 				if currentState == CLOSED || finAcked {
-					fmt.Printf("FIN acknowledged or state changed (State: %s, Acked: %v), stopping retransmission\n",
-						currentState, finAcked)
+					// fmt.Printf("FIN acknowledged or state changed (State: %s, Acked: %v), stopping retransmission\n",
+					// 	currentState, finAcked)
 					return
 				}
 
@@ -950,7 +950,7 @@ func (t *Tcp) CloseSocket(socket *Socket) error {
 					}
 
 				case <-ackChan:
-					fmt.Printf("ACK received in LAST_ACK state, stopping FIN retransmission immediately\n")
+					// fmt.Printf("ACK received in LAST_ACK state, stopping FIN retransmission immediately\n")
 					return
 				}
 			}
