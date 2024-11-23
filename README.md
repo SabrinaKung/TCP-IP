@@ -201,6 +201,107 @@ When retransmission is needed:
 3. If yes, retransmits and increments RetxCount
 4. If RetxCount exceeds MaxTryTime, terminates the connection
 
+## 6. TCP Socket Threading Implementation
+
+This part describes the threading model for handling `send` and `receive` commands. The threading model ensures efficient data transmission by dedicating specific threads to distinct tasks, allowing asynchronous processing and minimal contention.
+
+### Send Operation
+
+#### Main Thread
+When the vhost receives a `s <socketID> <content>` command, the following sequence occurs:
+
+1. The vhost's main thread calls the `VWrite` function on the corresponding socket.
+2. `VWrite` writes the content into the `sendbuffer`, updates the `sndLbw` pointer, and signals the `condEmpty` condition variable to notify the send thread that new data is available for transmission.
+
+#### Send Thread
+
+- **Creation**: this dedicated thread for sending data is created when the socket is established.
+- **Functionality**:
+  - Continuously sends data from the `sendbuffer` in a `while` loop.
+  - Waits on two condition variables, `condEmpty` and `condSndWnd`. The thread blocks when the `sendbuffer` is empty or the send window is zero and wakes up when signaled.
+  - Removes and sends data from the ring buffer, updates the `sndNxt` pointer, and adds sent segments to the `unackedSegments` list.
+
+#### Supporting Threads
+
+- **Zero Window Probing Thread**:
+  - Handles zero window probing in a `while` loop.
+  - Controlled by the `condSndWnd` condition variable. The thread blocks when the send window is non-zero.
+  
+- **Retransmission Thread**:
+  - Handles retransmissions independently without any condition variable control.
+  - Apart from acquiring and releasing locks for shared variables, this thread operates in isolation.
+
+```go
+func (t *Tcp) StartSocketSending(s *Socket) {
+    go t.handleSending(s)        // Handle normal sending
+    go t.handleZeroWndProbing(s) // Handle zero window probing
+    go t.handleRetransmission(s) // Handle retransmission
+}
+```
+
+### Receive Operation
+#### Main Thread
+When the vhost receives an `r <socketID> <length>` command, the following sequence occurs:
+
+1. The vhost's main thread calls the `VRead` function on the corresponding socket.
+2. If the `receivebuffer` is empty, the thread blocks on the `condEmpty` condition variable until data becomes available.
+
+#### Packet Processing Thread
+
+ this thread for processing packets is created during the initialization of the link layer.
+  
+```go
+for _, conn := range l.connMap {
+    go func() {
+        for {
+            buffer := make([]byte, common.MTU)
+            bytesRead, _, err := conn.ReadFromUDP(buffer)
+            if err != nil {
+                log.Println(err)
+            }
+
+            err = l.handleUdpPacket(buffer[:bytesRead], conn)
+            if err != nil {
+                log.Println(err)
+            }
+        }
+    }()
+}
+```
+This thread calls `func handleUdpPacket` to process packets through the API stack, layer by layer. Eventually, in `HandleTCPPacket`, it processes TCP packets by performing the following steps:
+1. **UpdateWindowSize**: Updates the window size and signals the `condSndWnd` condition variable.
+2. **ProcessAck**: Updates `UnackedSegments`, RTT, and moves `sndUna`.
+3. If the packet contains a payload, it processes the packet, writes data into the `receivebuffer`, increments `rcvNxt`, and decreases `rcvWnd`.
+#### Thread Communication
+
+Each thread operates independently, focusing on its specific task. Threads communicate only through three condition variables (`condEmpty`, `condSndWnd`, and `condRetransmit`) and by acquiring locks to access shared variables.
+
+---
+
+### Key Features
+
+- **Asynchronous Processing**: Each thread is dedicated to a single responsibility, ensuring efficient task management.
+- **Condition Variables**: Threads are synchronized using three condition variables, minimizing contention.
+- **Scalability**: The isolated threading model allows for scalable and robust socket handling.
+
+
+## Performance Comparison
+
+The following images show the start and end times for sending a file in the reference version and our version:
+
+### Reference Version
+- **Start Time**:
+![Reference Start](reference_start.png)
+- **End Time**:
+![Reference End](reference_end.png)
+
+### Our Version
+- **Start Time**:
+![Our Start](our_start.png)
+- **End Time**:
+![Our End](our_end.png)
+
+From these results, the reference version took **0.027s**, while our version took **0.062s**. Both are in the same magnitude of time.
 
 ## Packet capture
 - The 3-way handshake: pkt1, 4, 5
