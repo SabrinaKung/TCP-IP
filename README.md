@@ -7,21 +7,6 @@ This project implements a virtual host (vhost) and a virtual router (vrouter) as
 1. **vhost**: A virtual host implementation that can send and receive packets.
 2. **vrouter**: A virtual router implementation that can route packets and implements the RIP (Routing Information Protocol) for dynamic routing.
 
-## Features
-
-Both vhost and vrouter support the following features:
-
-- Sending test packets
-- Listing interfaces
-- Listing neighbors
-- Listing routes
-- Enabling/disabling interfaces
-
-Additionally, vrouter implements:
-
-- RIP protocol for dynamic routing
-- Periodic RIP updates
-
 ## Usage
 
 ### Compilation
@@ -51,15 +36,9 @@ util/vnet_run [--bin-dir BIN_DIR] lnx_dir
 
 ### Command-Line Interface
 
-Once running, both vhost and vrouter provide a command-line interface with the following commands:
+Once running, both vhost and vrouter provide a command-line interface:
 
-- `send <destination_ip> <message>`: Send a test packet
-- `li`: List interfaces
-- `ln`: List neighbors
-- `lr`: List routes
-- `up <ifname>`: Enable an interface
-- `down <ifname>`: Disable an interface
-- `exit` or `q`: Exit the program
+For more information about REPL commands: please refer to this [link](https://sabrinakung.github.io/TCP-IP/).
 
 ## Differences between vhost and vrouter
 
@@ -77,8 +56,6 @@ Once running, both vhost and vrouter provide a command-line interface with the f
 
 
 # IP Stack APIs Implementation
-
-## Answers to Key Questions
 
 ### 1. How did you build the abstractions for the IP layer and interfaces?
 
@@ -283,35 +260,3 @@ Each thread operates independently, focusing on its specific task. Threads commu
 - **Asynchronous Processing**: Each thread is dedicated to a single responsibility, ensuring efficient task management.
 - **Condition Variables**: Threads are synchronized using three condition variables, minimizing contention.
 - **Scalability**: The isolated threading model allows for scalable and robust socket handling.
-
-
-## Performance Comparison
-
-The following images show the start and end times for sending a file in the reference version and our version:
-
-### Reference Version
-- **Start Time**:
-![Reference Start](reference_start.png)
-- **End Time**:
-![Reference End](reference_end.png)
-
-### Our Version
-- **Start Time**:
-![Our Start](our_start.png)
-- **End Time**:
-![Our End](our_end.png)
-
-From these results, the reference version took **0.027s**, while our version took **0.062s**. Both are in the same magnitude of time.
-
-## Packet capture
-- The 3-way handshake: pkt1, 4, 5
-  <img width="1422" alt="The 3-way handshake" src="https://github.com/user-attachments/assets/52d9cb56-3581-44c3-b309-af89e103a8ad">
-- One segment sent and acknowledged: pkt 15 & 18
-  <img width="1418" alt="One segment sent and acknowledged" src="https://github.com/user-attachments/assets/c1e958ca-525e-47db-b6ba-e54af78677c2">
-- One segment that is retransmitted: pkt 649
-  <img width="1398" alt="One segment that is retransmitted" src="https://github.com/user-attachments/assets/8ad2f774-9bf0-4f7e-8df1-cb9bad695cbf">
-- Connection teardown: pkt 3081, 3084, 3086, 3087
-   <img width="1152" alt="Connection teardown" src="https://github.com/user-attachments/assets/493b3165-1914-43f4-a130-d23ebe963cdd">
-
-
-  
