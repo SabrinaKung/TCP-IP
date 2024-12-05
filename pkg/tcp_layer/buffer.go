@@ -155,16 +155,27 @@ func (sb *SendBuffer) ProcessAck(ackNum uint32) {
 	// Only update RTT for segments that weren't retransmitted (Karn's algorithm)
 	var newUnackedSegments []*Segment
 
-	// Process segments and update RTT once
+	// Find the first segment being acknowledged
+	var firstAckedSegment *Segment
 	for _, segment := range sb.unackedSegments {
 		if segment.SeqNum+uint32(segment.Length) <= ackNum {
-			// Update RTT only once and only for non-retransmitted segments
-			if segment.RetxCount == 0 {
-				rtt := time.Since(segment.LastSent)
-				if rtt < 10*time.Millisecond {
-					sb.rttStats.UpdateRTT(rtt)
-				}
-			}
+			firstAckedSegment = segment
+			break
+		}
+	}
+
+	// Only update RTT if:
+	// 1. We found the first acknowledged segment
+	// 2. It was never retransmitted
+	// 3. There were no retransmissions of earlier segments
+	if firstAckedSegment != nil && firstAckedSegment.RetxCount == 0 {
+		rtt := time.Since(firstAckedSegment.LastSent)
+		sb.rttStats.UpdateRTT(rtt)
+	}
+
+	// Process all segments
+	for _, segment := range sb.unackedSegments {
+		if segment.SeqNum+uint32(segment.Length) <= ackNum {
 			segment.Acked = true
 		} else {
 			newUnackedSegments = append(newUnackedSegments, segment)
